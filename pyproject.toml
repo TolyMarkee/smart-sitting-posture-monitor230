@@ -1,0 +1,5 @@
+[project]
+name = "posture-detection-k230-main"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
