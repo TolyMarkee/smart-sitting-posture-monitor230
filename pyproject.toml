@@ -1,5 +1,5 @@
 [project]
-name = "posture-detection-k230-main"
+name = "smart-sitting-posture-monitor230"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = []
