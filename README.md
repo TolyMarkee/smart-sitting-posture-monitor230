@@ -11,7 +11,161 @@
 - ✅ 完整的开发流程文档
 
 ---
+## 项目结构
 
+```
+smart-sitting-posture-monitor/
+│
+├── .github/                        
+│   ├── ISSUE_TEMPLATE.md          
+│   └── PULL_REQUEST_TEMPLATE.md    # GitHub 模板（PR、issue模板，加分项）
+       
+│
+├── edge/                           # 边缘端（庐山派K230）
+│   ├── src/
+│   │   ├── main.py                 # 主程序入口（摄像头采集、推理、显示）
+│   │   ├── posture_analyzer.py     # 坐姿分析（角度计算、状态机）
+│   │   ├── keypoint_validator.py   # 关键点过滤（遮挡、置信度）
+│   │   ├── config.py               # 配置文件（IO、上传URL、阈值）
+│   │   └── uploader.py             # 网络上传 + 断线重连 + 本地缓存
+│   ├── models/                     # 存放 .kmodel 文件（gitignore）
+│   ├── requirements.txt            # 边缘端依赖（若K230自带则不必须）
+│   └── README.md                   # 边缘端烧录与运行说明
+│
+├── backend/                        # FastAPI 后端服务
+│   ├── app/
+│   │   ├── __init__.py
+│   │   ├── main.py                 # FastAPI 应用入口（CORS、路由注册）
+│   │   ├── api/                    # 路由层（版本 v1）
+│   │   │   ├── __init__.py
+│   │   │   ├── auth.py             # 用户注册、登录、JWT验证
+│   │   │   ├── data.py             # 接收边缘端上传数据、查询历史
+│   │   │   ├── ml.py               # 模型训练（异步）、预测、聚类结果
+│   │   │   └── chat.py             # 大模型API代理（智能客服）
+│   │   ├── core/                   # 核心业务逻辑
+│   │   │   ├── __init__.py
+│   │   │   ├── data_preprocess.py  # Pandas清洗、异常检测、聚合（日/周/月）
+│   │   │   ├── feature_engineering.py # 特征构造（滑动窗口、角度差分）
+│   │   │   ├── kmeans_cluster.py   # K-Means 坐姿模式聚类
+│   │   │   ├── xgboost_model.py    # XGBoost 健康评分（训练+预测）
+│   │   │   ├── lstm_model.py       # LSTM 时序预测（训练+预测）
+│   │   │   └── model_manager.py    # 模型加载/保存、版本管理
+│   │   ├── db/                     # 数据库
+│   │   │   ├── __init__.py
+│   │   │   ├── session.py          # SQLAlchemy 引擎与会话
+│   │   │   ├── models.py           # ORM 模型（User, PostureRecord, DailyStat）
+│   │   │   └── crud.py             # 数据库增删改查封装
+│   │   ├── tasks/                  # 异步任务（Celery / BackgroundTasks）
+│   │   │   ├── __init__.py
+│   │   │   └── scheduler.py        # 定时任务（每日聚合、模型重训练）
+│   │   ├── utils/                  # 辅助工具
+│   │   │   ├── logger.py           # 日志配置
+│   │   │   ├── security.py         # 密码哈希、JWT
+│   │   │   └── llm_client.py       # 大模型API统一调用（支持多厂商）
+│   │   └── schemas/                # Pydantic 模型（请求/响应校验）
+│   │       ├── __init__.py
+│   │       ├── user.py
+│   │       ├── posture.py
+│   │       └── ml.py
+│   ├── requirements.txt            # 后端依赖（fastapi, uvicorn, sqlalchemy, pandas, xgboost, tensorflow, celery, redis...）
+│   ├── Dockerfile                  # 后端容器化
+│   ├── celery_worker.py            # Celery 启动文件
+│   └── .env.example                # 环境变量模板（数据库URL、JWT密钥、大模型API Key）
+│
+├── frontend/                       # Vue3 前端项目
+│   ├── public/
+│   ├── .vscode/
+│   │   ├──extensions.json 
+│   ├── src/
+│   │   ├── api/                    # 接口封装（axios）
+│   │   │   ├── auth.js
+│   │   │   ├── data.js
+│   │   │   ├── ml.js
+│   │   │   └── chat.js
+│   │   ├── assets/                 # 静态资源
+│   │   ├── components/             # 复用组件
+│   │   │   ├── LineChart.vue       # 趋势图（ECharts）
+│   │   │   ├── ScatterPlot.vue     # 聚类散点图
+│   │   │   └── RealTimeIndicator.vue # 实时状态卡片
+│   │   ├── layouts/                # 布局组件（Header, Sidebar）
+│   │   ├── router/                 # Vue Router
+│   │   │   └── index.js            # 路由守卫（登录拦截）
+│   │   ├── store/                  # Pinia 状态管理
+│   │   │   ├── user.js             # 用户信息、token
+│   │   │   └── posture.js          # 实时/历史数据缓存
+│   │   ├── views/                  # 页面视图
+│   │   │   ├── Login.vue
+│   │   │   ├── Register.vue
+│   │   │   ├── Dashboard.vue       # 实时看板（当前坐姿、实时角度）
+│   │   │   ├── History.vue         # 历史趋势（日/周/月图表 + 统计）
+│   │   │   ├── Cluster.vue         # 聚类分析结果展示
+│   │   │   ├── HealthReport.vue    # 健康报告（含预测曲线）
+│   │   │   └── SmartAssistant.vue  # 智能客服（对话界面）
+│   │   ├── App.vue
+│   │   ├── style.css
+│   │   └── main.js
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── index.html
+│   ├── README.md
+│   ├── vite.config.js
+│   └── .env.development            # 环境变量（后端API地址）
+│
+├── ml/                             # 模型训练与优化（独立环境）
+│   ├── yolov8_finetune/            # YOLOv8-pose 微调
+│   │   ├── train.py                # 训练脚本（支持AICube或本地GPU）
+│   │   ├── convert_to_k230.py      # 导出为 .kmodel（量化）
+│   │   ├── config.yaml             # 超参数配置
+│   │   └── dataset/                # 数据集（gitignore）
+│   ├── notebooks/                  # Jupyter 探索性分析
+│   │   ├── 01_EDA.ipynb            # 数据分布、相关性
+│   │   ├── 02_KMeans.ipynb         # 聚类可视化
+│   │   └── 03_LSTM.ipynb           # 时序预测实验
+│   ├── scripts/                    # 辅助脚本
+│   │   └── generate_demo_data.py   # 生成模拟数据用于开发测试
+│   └── requirements.txt            # 训练环境依赖（torch, ultralytics, pandas, notebook...）
+│
+├── database/                       # 数据库脚本
+│   ├── schema.sql                  # 建库、建表（用户、坐姿记录、统计表、模型表）
+│   ├── init_data.sql               # 初始化数据（测试用户、示例数据）
+│   └── migrations/                 # 版本迁移（可选，Alembic）
+│
+├── docs/                           # 课程文档（直接对应评分“文档规范度”）
+│   ├── PRD.md                      # 产品需求文档（复述任务书背景+细化）
+│   ├── technical_design.md         # 技术设计（架构图、时序图、数据库ER图）
+│   ├── api_documentation.md        # API 接口文档（Swagger 导出或手动编写）
+│   ├── deployment_guide.md         # 部署说明（边缘端烧录、后端启动、前端构建）
+│   ├── user_manual.md              # 用户手册（如何使用各页面）
+│   └── images/                     # 存放架构图、截图
+│
+├── scripts/                        # 运维/开发脚本
+│   ├── upload_demo_data.py         # 模拟边缘端上传数据（测试后端）
+│   ├── start_all.sh                # Linux/Mac 一键启动（后端+celery+前端）
+│   └── start_all.ps1               # Windows PowerShell 启动脚本
+│
+├── tests/                          # 测试（加分项）
+│   ├── unit/                       # 单元测试
+│   │   ├── test_preprocess.py
+│   │   ├── test_kmeans.py
+│   │   └── test_api.py
+│   └── integration/                # 集成测试（边缘端上传→存储→分析）
+│
+├── .env.example                    # 全局环境变量模板（数据库、Redis、大模型Key）
+├── .gitignore                      # 忽略 __pycache__, .venv, node_modules, .env, *.kmodel, datasets/
+├── docker-compose.yml              # 编排 MySQL, Redis, Backend, Nginx
+├── LICENSE                         # MIT License
+├── README.md                       # 项目概述、架构图、快速开始、演示链接
+├── package.json
+├── CONTRIBUTING.md
+├── pyproject.toml
+└── requirements.txt                # 可选的根依赖（实际推荐各自目录独立）
+
+
+
+
+
+
+```
 ## 项目结构
 
 ```

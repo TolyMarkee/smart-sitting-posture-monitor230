@@ -1,0 +1,43 @@
+# YOLOv8-Pose 训练超参数配置
+
+# 数据集路径
+dataset:
+  train: ./dataset/images/train
+  val: ./dataset/images/val
+  labels: ./dataset/labels
+
+# 模型配置
+model:
+  name: yolov8n-pose        # YOLOv8 nano-pose（轻量，适合 K230 边缘部署）
+  pretrained: yolov8n-pose.pt
+  num_keypoints: 17          # COCO 格式 17 个关键点
+
+# 训练超参数
+train:
+  epochs: 100
+  batch_size: 16
+  img_size: 320              # K230 推理尺寸
+  learning_rate: 0.001
+  lr_scheduler: cosine       # cosine / step / linear
+  warmup_epochs: 3
+  weight_decay: 0.0005
+  momentum: 0.937
+
+# 数据增强
+augmentation:
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  degrees: 10.0              # 旋转角度
+  translate: 0.1             # 平移
+  scale: 0.5                 # 缩放
+  shear: 2.0                 # 剪切
+  flip_lr: 0.5               # 左右翻转概率
+  mosaic: 1.0                # Mosaic 增强
+
+# K230 转换配置
+k230:
+  kmodel_output: ./yolov8n-pose-custom.kmodel
+  input_size: [320, 320]
+  quantization: int8         # int8 量化适合 K230 KPU
+  test_image: ./test.jpg     # 转换后验证图片
