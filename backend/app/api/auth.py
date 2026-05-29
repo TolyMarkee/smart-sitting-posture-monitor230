@@ -331,11 +331,22 @@ def generate_daily_tasks(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """为用户生成今日任务（如果还没有）"""
+    """为用户生成今日任务（并自动清理昨日未完成任务）"""
+    from datetime import datetime as dt
+    today_start = dt.combine(date_type.today(), dt.min.time())
+    # 清理昨天及以前的未完成任务
+    db.query(models.UserTask).filter(
+        models.UserTask.user_id == current_user.id,
+        models.UserTask.task_type == "daily",
+        models.UserTask.status == "pending",
+        models.UserTask.created_at < today_start,
+    ).delete()
+    db.commit()
+
     today_count = db.query(models.UserTask).filter(
         models.UserTask.user_id == current_user.id,
         models.UserTask.task_type == "daily",
-        models.UserTask.created_at >= date_type.today(),
+        models.UserTask.created_at >= today_start,
     ).count()
 
     if today_count > 0:
@@ -425,17 +436,17 @@ def save_settings(data):
     print(f"[Settings] 已保存到 {SETTINGS_FILE}")
 
 @router.get("/admin/settings")
-def get_settings(admin: models.User = Depends(require_super_admin)):
-    """超级管理员：读取系统设置"""
+def get_settings(admin: models.User = Depends(require_admin)):
+    """管理员：读取系统设置"""
     return {"settings": load_settings()}
 
 @router.put("/admin/settings")
 def update_settings(
     amap_key: Optional[str] = None,
     weather_key: Optional[str] = None,
-    admin: models.User = Depends(require_super_admin),
+    admin: models.User = Depends(require_admin),
 ):
-    """超级管理员：更新系统设置（高德API Key等）"""
+    """管理员：更新系统设置（高德API Key等）"""
     s = load_settings()
     if amap_key is not None: s["amap_key"] = amap_key
     if weather_key is not None: s["weather_key"] = weather_key
