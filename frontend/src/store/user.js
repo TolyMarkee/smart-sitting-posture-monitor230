@@ -8,7 +8,7 @@ export const useUserStore = defineStore('user', () => {
   const profile = ref(null)   // 完整个人信息
 
   const isLoggedIn = computed(() => !!token.value)
-  const isAdmin = computed(() => userInfo.value?.role === 'admin')
+  const isAdmin = computed(() => userInfo.value?.role === 'admin' || userInfo.value?.role === 'super_admin')
 
   async function login(username, password) {
     const { data } = await authApi.login({ username, password })

@@ -69,6 +69,14 @@ def init_database():
     try:
         safe_create_user(db, "test", "test@example.com", "123456", "user", "测试用户")
         safe_create_user(db, "admin", "admin@posture.com", "admin123", "super_admin", "系统管理员")
+        # 修复已有 admin 用户角色（如果之前创建时使用了旧角色名 "admin"）
+        existing_admin = get_user_by_username(db, "admin")
+        if existing_admin and existing_admin.role != "super_admin":
+            try:
+                crud.update_user(db, existing_admin.id, {"role": "super_admin"})
+                print("[Init] 已将 admin 升级为 super_admin")
+            except Exception:
+                db.rollback()
     finally:
         db.close()
 
