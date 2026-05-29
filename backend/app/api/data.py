@@ -1,5 +1,6 @@
 # 数据接口：上传 + 历史查询 + 聚合统计
 
+import os, json, httpx
 from datetime import datetime, date, timedelta
 from typing import Optional
 import random
@@ -60,18 +61,17 @@ def get_weather(
     city: str = Query(default="440100", description="城市编码（默认广州）"),
 ):
     """代理高德天气 API"""
-    import json as jmod
     settings_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "settings.json"))
     amap_key = ""
     if os.path.exists(settings_path):
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
-                amap_key = jmod.load(f).get("amap_key", "")
+                amap_key = json.load(f).get("amap_key", "")
         except Exception:
             pass
 
+    print(f"[Weather] settings_path={settings_path}, exists={os.path.exists(settings_path)}, key={'***' if amap_key else 'EMPTY'}")
     if not amap_key:
-        # 返回模拟天气数据
         return {
             "status": "demo",
             "city": "演示城市",
