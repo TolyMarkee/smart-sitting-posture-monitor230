@@ -6,6 +6,9 @@ import { usePostureStore } from '../store/posture'
 import { useUserStore } from '../store/user'
 import request from '../api/request'
 import RealTimeIndicator from '../components/RealTimeIndicator.vue'
+import VideoStreamPanel from '../components/VideoStreamPanel.vue'
+import { useWebSocket } from '../composables/useWebSocket'
+import { useVideoStream } from '../composables/useVideoStream'
 
 const router = useRouter()
 const route = useRoute()
@@ -15,6 +18,12 @@ const lastUpdate = ref('')
 const refreshTime = ref('')
 const currentPath = computed(() => route.path)
 const pollCount = ref(0)
+
+// WebSocket 实时连接（自动回退到轮询）
+const { wsConnected, isFallbackPolling } = useWebSocket()
+
+// 视频流状态
+const { isOnline: videoOnline, streamUrl: videoStreamUrl, snapshotUrl, handleStreamError, retry: retryVideo, startStatusCheck, stopStatusCheck, startSnapshotPolling, stopSnapshotPolling } = useVideoStream()
 
 // ── 当前时间 ──
 const nowStr = ref('')
@@ -43,19 +52,25 @@ const dailyStats = ref([])
 const streakDays = ref(0)
 
 async function loadStats() {
-  const uid = userStore.userInfo?.user_id
-  if (!uid) return
+  const uid = userStore.userInfo?.user_id || userStore.profile?.id || 1
+  // 加载每日聚合（日历数据）— 用 fetch 绕过 axios 拦截器问题
   try {
     const end = new Date().toISOString().slice(0, 10)
     const start = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10)
-    const { data } = await postureStore.fetchDailySummary(uid, start, end)
-    dailyStats.value = data.stats || []
-    let streak = 0
-    for (const s of [...dailyStats.value].reverse()) {
-      if (s.bad_posture_ratio !== null && s.bad_posture_ratio < 0.3) streak++
-      else break
-    }
-    streakDays.value = streak
+    const url = new URL('/api/v1/data/daily-summary', window.location.origin)
+    url.searchParams.set('user_id', uid)
+    url.searchParams.set('start_date', start)
+    url.searchParams.set('end_date', end)
+    const resp = await fetch(url)
+    const json = await resp.json()
+    dailyStats.value = json.stats || []
+  } catch (e) {
+    console.error('[Dashboard] 日历加载失败:', e)
+  }
+  // 加载签到数据（打卡天数）
+  try {
+    const resp = await request.get('/api/v1/auth/checkin/status')
+    streakDays.value = resp.data?.streak || 0
   } catch { /* ignore */ }
 }
 
@@ -168,6 +183,19 @@ async function requestNotification() {
 }
 
 function handleLogout() { userStore.logout(); router.push('/login') }
+function openAssistant() { router.push('/assistant') }
+
+// 悬浮AI宠物（可拖拽）
+const petRef = ref(null); const petHidden = ref(false); const petMsg = ref('')
+const petPos = ref({ x: window.innerWidth - 80, y: window.innerHeight - 180 })
+const petStyle = computed(() => ({ left: petPos.value.x + 'px', top: petPos.value.y + 'px' }))
+let dragging = false, dragStart = { x: 0, y: 0 }
+function startDrag(e) { if (e.target.closest('.pet-bubble')) return; dragging = true; dragStart = { x: e.clientX - petPos.value.x, y: e.clientY - petPos.value.y }; document.addEventListener('mousemove', onDrag); document.addEventListener('mouseup', stopDrag) }
+function onDrag(e) { if (!dragging) return; petPos.value = { x: e.clientX - dragStart.x, y: e.clientY - dragStart.y } }
+function stopDrag() { dragging = false; document.removeEventListener('mousemove', onDrag); document.removeEventListener('mouseup', stopDrag) }
+const petTips = ['记得挺直腰背哦~','该起来走走了！','喝点水吧','转转脖子放松','你的坐姿真棒！','看看健康报告吧']
+let petTimer = null
+function showPetTip() { petMsg.value = petTips[Math.floor(Math.random() * petTips.length)]; setTimeout(() => { petMsg.value = '' }, 4000) }
 
 // ── 生成模拟数据 ──
 const genLoading = ref(false)
@@ -185,13 +213,79 @@ async function generateDemoData() {
   } finally { genLoading.value = false }
 }
 
-// ── 天气 ──
+// ── 天气 + 城市选择 ──
 const weather = ref(null)
+const showCityPicker = ref(false)
+const cityName = ref(localStorage.getItem('weather_city') || '')
+const cityCode = ref(localStorage.getItem('weather_city_code') || '')
+const citySuggestions = ref([])  // 联想搜索结果
+let citySearchTimer = null
+
+// 输入城市名时触发联想搜索（300ms 防抖）
+function onCityInput() {
+  clearTimeout(citySearchTimer)
+  const q = cityName.value.trim()
+  if (!q || q.length < 1) {
+    citySuggestions.value = []
+    return
+  }
+  citySearchTimer = setTimeout(async () => {
+    try {
+      const url = new URL('/api/v1/data/city-lookup', window.location.origin)
+      url.searchParams.set('name', q)
+      const resp = await fetch(url)
+      const data = await resp.json()
+      citySuggestions.value = data.cities || []
+    } catch { citySuggestions.value = [] }
+  }, 300)
+}
+
+// 点击联想条目直接选择城市
+function selectCity(city) {
+  cityCode.value = city.adcode
+  cityName.value = city.name
+  localStorage.setItem('weather_city', city.name)
+  localStorage.setItem('weather_city_code', city.adcode)
+  citySuggestions.value = []
+  showCityPicker.value = false
+  loadWeather()
+}
+
 async function loadWeather() {
   try {
-    const resp = await request.get('/api/v1/data/weather')
-    weather.value = resp.data
-  } catch { /* ignore */ }
+    const url = new URL('/api/v1/data/weather', window.location.origin)
+    if (cityCode.value) url.searchParams.set('city', cityCode.value)
+    const resp = await fetch(url)
+    const data = await resp.json()
+    if (data && data.weather) {
+      weather.value = data
+    }
+  } catch (e) {
+    console.error('[Weather] 加载失败:', e)
+  }
+}
+async function switchCity() {
+  const name = cityName.value.trim()
+  if (!name) return
+  try {
+    // 通过后端代理查询城市编码（无需前端持有API Key）
+    const url = new URL('/api/v1/data/city-lookup', window.location.origin)
+    url.searchParams.set('name', name)
+    const resp = await fetch(url)
+    const data = await resp.json()
+    if (data.status === 'success' && data.adcode) {
+      cityCode.value = data.adcode
+      cityName.value = data.name
+      localStorage.setItem('weather_city', data.name)
+      localStorage.setItem('weather_city_code', data.adcode)
+      showCityPicker.value = false
+      await loadWeather()
+      return
+    }
+    ElNotification({ title: '城市切换失败', message: data.message || '未找到该城市', type: 'warning' })
+  } catch {
+    ElNotification({ title: '切换失败', message: '网络异常，请稍后重试', type: 'error' })
+  }
 }
 
 let timer = null, clockTimer = null
@@ -201,12 +295,18 @@ onMounted(() => {
   loadStats()
   loadWeather()
   requestNotification()
+  startStatusCheck()   // 视频流在线检测
+  startSnapshotPolling() // 截图模式轮询
   timer = setInterval(refresh, 3000)
   clockTimer = setInterval(updateClock, 1000)
+  petTimer = setInterval(showPetTip, 30000)
 })
 onUnmounted(() => {
   clearInterval(timer)
   clearInterval(clockTimer)
+  clearInterval(petTimer)
+  stopStatusCheck()
+  stopSnapshotPolling()
 })
 </script>
 
@@ -259,7 +359,11 @@ onUnmounted(() => {
       <div class="welcome-row">
         <div class="welcome-text">
           <h1>{{ greeting }}，{{ userStore.profile?.nickname || userStore.userInfo?.username || '用户' }}</h1>
-          <p>{{ dateStr }} {{ weekdayStr }} · 刷新 {{ refreshTime }}</p>
+          <p>
+            {{ dateStr }} {{ weekdayStr }} · 刷新 {{ refreshTime }}
+            <span v-if="wsConnected" style="color:#67c23a;margin-left:8px">⚡实时</span>
+            <span v-else style="color:#e6a23c;margin-left:8px">📡轮询</span>
+          </p>
         </div>
         <div class="quick-actions">
           <el-button size="small" :loading="genLoading" @click="generateDemoData" style="margin-right:12px">
@@ -290,6 +394,14 @@ onUnmounted(() => {
       <div class="content-grid">
         <!-- 左：实时指标 -->
         <div class="content-left">
+          <!-- K230 视频流 -->
+          <VideoStreamPanel
+            :is-online="videoOnline"
+            :stream-url="videoStreamUrl"
+            :snapshot-url="snapshotUrl"
+            @error="handleStreamError"
+            @retry="retryVideo"
+          />
           <RealTimeIndicator
             :issues="(postureStore.latest && postureStore.latest.issues) || []"
             :head-angle="postureStore.latest?.head_angle ?? 0"
@@ -304,8 +416,11 @@ onUnmounted(() => {
         <!-- 中：日历 -->
         <div class="content-center">
           <div class="panel-card">
-            <div class="panel-title">近14天坐姿日历</div>
-            <div class="calendar-grid" v-if="dailyStats.length > 0">
+            <div class="panel-title" style="cursor:pointer" @click="router.push('/posture-calendar')">近14天坐姿日历 <span style="font-size:11px;color:#909399">详情 ›</span></div>
+            <div v-if="dailyStats.length === 0" class="empty-hint">
+              暂无数据，请先<el-button type="primary" size="small" text :loading="genLoading" @click="generateDemoData">生成模拟数据</el-button>
+            </div>
+            <div class="calendar-grid" v-else>
               <div v-for="(d, idx) in dailyStats" :key="idx"
                    :class="['day-cell', dayClass(d)]"
                    :title="`点击查看${d.stat_date}详情`"
@@ -313,7 +428,6 @@ onUnmounted(() => {
                 <span>{{ d.stat_date.slice(5) }}</span>
               </div>
             </div>
-            <div v-else class="empty-hint">暂无统计数据</div>
             <div class="calendar-legend">
               <span><span class="ld day-good"></span>良好</span>
               <span><span class="ld day-ok"></span>一般</span>
@@ -321,8 +435,8 @@ onUnmounted(() => {
               <span><span class="ld day-warn"></span>需改善</span>
             </div>
           </div>
-          <div class="panel-card streak-panel">
-            <div class="panel-title">连续打卡</div>
+          <div class="panel-card streak-panel" style="cursor:pointer" @click="router.push('/calendar')">
+            <div class="panel-title">连续打卡 <span style="font-size:11px;color:#909399">点击查看 ›</span></div>
             <div class="streak-big">{{ streakDays }}<span>天</span></div>
             <div class="streak-dots">
               <span v-for="i in 7" :key="i" :class="{ filled: i <= Math.min(streakDays, 7) }"></span>
@@ -330,37 +444,81 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 右：天气占位 + 快捷入口 -->
+        <!-- 右：天气 + 快捷入口 -->
         <div class="content-right">
-          <div class="panel-card weather-card">
-            <div class="panel-title">环境信息</div>
-            <div v-if="weather && weather.weather" class="weather-real">
-              <div class="weather-icon">{{ weather.weather === '晴' ? '☀️' : weather.weather.includes('云') ? '⛅' : weather.weather.includes('雨') ? '🌧️' : '🌤️' }}</div>
-              <div class="weather-temp">{{ weather.temperature }}°C</div>
-              <div class="weather-detail">{{ weather.weather }} · 湿度{{ weather.humidity }}%</div>
-              <div class="weather-detail">{{ weather.city }} · {{ weather.winddirection }}</div>
+          <!-- 天气大卡片 -->
+          <div class="weather-big-card" v-if="weather">
+            <div class="weather-main">
+              <div class="weather-left">
+                <div class="weather-icon-big">{{ weather.weather === '晴' ? '☀️' : weather.weather.includes('云') ? '⛅' : weather.weather.includes('雨') ? '🌧️' : '🌤️' }}</div>
+                <div class="weather-info">
+                  <div class="weather-city-row">
+                    <span class="weather-city">{{ weather.city || '未知' }}</span>
+                    <span class="weather-change" @click="showCityPicker = !showCityPicker">切换 ▾</span>
+                  </div>
+                  <div class="weather-time">{{ nowStr }}</div>
+                </div>
+              </div>
+              <div class="weather-right">
+                <div class="weather-temp-big">{{ weather.temperature }}<span>°</span></div>
+                <div class="weather-desc">{{ weather.weather }}</div>
+              </div>
             </div>
-            <div v-else class="weather-placeholder">
-              <div class="weather-icon">🌤️</div>
-              <p>等待数据...</p>
-              <span class="weather-hint" style="cursor:pointer;color:#667eea" @click="router.push('/profile')">管理员配置API Key</span>
+            <div v-if="showCityPicker" class="city-picker-row" style="position:relative">
+              <div style="flex:1;position:relative">
+                <el-input v-model="cityName" size="small" placeholder="搜索城市名..." @input="onCityInput" @keyup.enter="switchCity" class="city-input" />
+                <div v-if="citySuggestions.length > 0" class="city-dropdown">
+                  <div v-for="c in citySuggestions" :key="c.adcode" class="city-dropdown-item" @click="selectCity(c)">
+                    {{ c.name }}
+                  </div>
+                </div>
+              </div>
+              <el-button size="small" type="primary" @click="switchCity">切换</el-button>
+            </div>
+            <div class="weather-extra">
+              <span>💧 {{ weather.humidity || '--' }}%</span>
+              <span>💨 {{ weather.winddirection || '--' }}</span>
+              <span>🕐 {{ weather.reporttime?.slice(11,16) || '' }}</span>
             </div>
           </div>
+          <!-- 天气加载中/加载失败占位 -->
+          <div class="weather-big-card weather-placeholder-card" v-else>
+            <div class="weather-main">
+              <div class="weather-left">
+                <div class="weather-icon-big">🌤️</div>
+                <div class="weather-info">
+                  <span class="weather-city">{{ cityName || '选择城市' }}</span>
+                  <span class="weather-change" @click="showCityPicker = !showCityPicker">切换 ▾</span>
+                  <div class="weather-time">{{ nowStr }}</div>
+                </div>
+              </div>
+              <div class="weather-right">
+                <div class="weather-temp-big">--<span>°</span></div>
+              </div>
+            </div>
+            <div v-if="showCityPicker" class="city-picker-row" style="position:relative">
+              <div style="flex:1;position:relative">
+                <el-input v-model="cityName" size="small" placeholder="搜索城市名..." @input="onCityInput" @keyup.enter="switchCity" class="city-input" />
+                <div v-if="citySuggestions.length > 0" class="city-dropdown">
+                  <div v-for="c in citySuggestions" :key="c.adcode" class="city-dropdown-item" @click="selectCity(c)">
+                    {{ c.name }}
+                  </div>
+                </div>
+              </div>
+              <el-button size="small" type="primary" @click="switchCity">切换</el-button>
+            </div>
+            <div class="weather-extra">
+              <span @click="loadWeather()" style="cursor:pointer">点击重试</span>
+            </div>
+          </div>
+
           <div class="panel-card quick-links">
             <div class="panel-title">快捷操作</div>
             <div class="link-grid">
-              <div class="link-item" @click="router.push('/health-report')">
-                <span class="link-icon">📋</span><span>健康报告</span>
-              </div>
-              <div class="link-item" @click="router.push('/cluster')">
-                <span class="link-icon">📊</span><span>聚类分析</span>
-              </div>
-              <div class="link-item" @click="router.push('/assistant')">
-                <span class="link-icon">🤖</span><span>智能客服</span>
-              </div>
-              <div class="link-item" @click="router.push('/history')">
-                <span class="link-icon">📈</span><span>历史趋势</span>
-              </div>
+              <div class="link-item" @click="router.push('/health-report')"><span class="link-icon">📋</span><span>健康报告</span></div>
+              <div class="link-item" @click="router.push('/cluster')"><span class="link-icon">📊</span><span>聚类分析</span></div>
+              <div class="link-item" @click="router.push('/assistant')"><span class="link-icon">🤖</span><span>智能客服</span></div>
+              <div class="link-item" @click="router.push('/history')"><span class="link-icon">📈</span><span>历史趋势</span></div>
             </div>
           </div>
         </div>
@@ -368,7 +526,7 @@ onUnmounted(() => {
     </div>
   
     <!-- 日历日详情弹窗 -->
-    <el-dialog v-model="showDayDetail" :title="dayDetail?.date ? dayDetail.date + ' 坐姿详情' : '加载中...'" width="600px">
+    <el-dialog  append-to-body v-model="showDayDetail" :title="dayDetail?.date ? dayDetail.date + ' 坐姿详情' : '加载中...'" width="600px">
       <div v-if="dayDetailLoading" style="text-align:center;padding:40px">加载中...</div>
       <div v-else-if="dayDetail">
         <el-row :gutter="12" style="margin-bottom:16px">
@@ -387,6 +545,14 @@ onUnmounted(() => {
         <div v-else style="text-align:center;color:#909399;padding:20px">该日无详细记录</div>
       </div>
     </el-dialog>
+
+    <!-- 悬浮AI助手 -->
+    <div class="ai-pet" :style="petStyle" @mousedown="startDrag" ref="petRef" v-show="!petHidden">
+      <div class="pet-bubble" v-if="petMsg" @click="petMsg=''">{{ petMsg }}</div>
+      <div class="pet-body" @click="openAssistant" title="AI坐姿助手">
+        <span class="pet-face">🤖</span>
+      </div>
+    </div>
 
 </div>
 </template>
@@ -481,9 +647,39 @@ onUnmounted(() => {
 .streak-dots span { width: 24px; height: 24px; border-radius: 50%; background: #ebeef5; transition: all 0.3s; }
 .streak-dots span.filled { background: #67c23a; box-shadow: 0 2px 8px rgba(103,194,58,0.4); }
 
-/* 天气 */
-.weather-card { text-align: center; }
-.weather-icon { font-size: 36px; }
+/* 天气大卡片 */
+.weather-big-card {
+  background: linear-gradient(135deg, #3b82f6 0%, #60a5fa 40%, #93c5fd 100%);
+  border-radius: 14px; padding: 18px; color: #fff; margin-bottom: 12px;
+  box-shadow: 0 4px 16px rgba(59,130,246,0.3);
+  position: relative; overflow: hidden;
+}
+.weather-big-card::after {
+  content: ''; position: absolute; top: -30px; right: -30px;
+  width: 120px; height: 120px; border-radius: 50%;
+  background: rgba(255,255,255,0.1);
+}
+.weather-main { display: flex; justify-content: space-between; align-items: center; position: relative; z-index: 1; }
+.weather-left { display: flex; align-items: center; gap: 12px; }
+.weather-icon-big { font-size: 42px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2)); animation: weatherFloat 3s ease-in-out infinite; }
+@keyframes weatherFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
+.weather-city { font-size: 15px; font-weight: 600; }
+.weather-change { font-size: 11px; opacity: 0.7; cursor: pointer; margin-left: 4px; }
+.weather-change:hover { opacity: 1; }
+.weather-time { font-size: 12px; opacity: 0.75; margin-top: 2px; }
+.weather-right { text-align: right; position: relative; z-index: 1; }
+.weather-temp-big { font-size: 48px; font-weight: 300; line-height: 1; }
+.weather-temp-big span { font-size: 22px; }
+.weather-desc { font-size: 14px; opacity: 0.85; margin-top: 2px; }
+.weather-extra { display: flex; gap: 16px; margin-top: 12px; font-size: 12px; opacity: 0.8; position: relative; z-index: 1; }
+.city-picker-row { display: flex; gap: 6px; margin-top: 10px; position: relative; z-index: 1; }
+.city-input { flex: 1; }
+.city-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: #fff; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.15); max-height: 180px; overflow-y: auto; z-index: 100; }
+.city-dropdown-item { padding: 8px 12px; cursor: pointer; font-size: 13px; color: #303133; transition: background 0.1s; }
+.city-dropdown-item:hover { background: #f0f2f5; }
+.weather-placeholder-card { background: linear-gradient(135deg, #94a3b8, #cbd5e1) !important; box-shadow: 0 4px 16px rgba(148,163,184,0.2) !important; }
+
+/* 天气占位 */
 .weather-placeholder p { color: #909399; font-size: 13px; margin: 8px 0 4px; }
 .weather-hint { font-size: 11px; color: #c0c4cc; }
 
@@ -503,4 +699,18 @@ onUnmounted(() => {
 }
 .detail-stat { text-align:center; padding:12px; background:#f7f8fa; border-radius:8px; font-size:13px; color:#606266; }
 .detail-stat b { font-size:22px; display:block; margin-bottom:2px; }
+/* 视频面板样式已迁移至 VideoStreamPanel.vue */
+.video-placeholder span { font-size: 11px; color: #c0c4cc; }
+.video-status.offline { color: #f56c6c; font-size: 11px; }
+
+/* 悬浮AI宠物 */
+.ai-pet { position: fixed; z-index: 999; cursor: grab; user-select: none; }
+.ai-pet:active { cursor: grabbing; }
+.pet-body { width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #667eea, #764ba2); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 16px rgba(102,126,234,0.4); transition: transform 0.2s; animation: petBounce 2s ease-in-out infinite; }
+.pet-body:hover { transform: scale(1.1); }
+.pet-face { font-size: 28px; }
+.pet-bubble { position: absolute; bottom: 64px; right: -10px; background: #fff; padding: 8px 14px; border-radius: 14px; font-size: 13px; color: #303133; box-shadow: 0 2px 12px rgba(0,0,0,0.1); white-space: nowrap; cursor: pointer; animation: fadeInUp 0.3s ease; }
+.pet-bubble::after { content: ''; position: absolute; bottom: -6px; right: 20px; width: 12px; height: 12px; background: #fff; transform: rotate(45deg); }
+@keyframes petBounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+@keyframes fadeInUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
 </style>

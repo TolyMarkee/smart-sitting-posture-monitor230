@@ -7,3 +7,7 @@ USE smart_posture;
 INSERT IGNORE INTO users (username, email, password_hash) VALUES
 ('test', 'test@example.com', '$2b$12$LJ3m4ys3LC0fSGw6kPQXKeVLSg8DJ8xcZMNx3XwqvBxw2wfvJn5.q'),
 ('demo', 'demo@example.com', '$2b$12$LJ3m4ys3LC0fSGw6kPQXKeVLSg8DJ8xcZMNx3XwqvBxw2wfvJn5.q');
+.
+30.
+21.
+0

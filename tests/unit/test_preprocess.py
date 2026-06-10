@@ -6,18 +6,20 @@ import numpy as np
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "backend" / "app" / "core"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "backend"))
 
-from data_preprocess import (
+from app.core.data_preprocess import (
     records_to_dataframe,
     remove_outliers,
     fill_missing,
     aggregate_daily,
     METRIC_COLUMNS,
 )
+from datetime import datetime
 
 
 class MockRecord:
+    """模拟 SQLAlchemy 记录对象"""
     def __init__(self, head_angle, shoulder_diff, hunchback_score, body_tilt, round_shoulder, created_at):
         self.head_angle = head_angle
         self.shoulder_diff = shoulder_diff

@@ -67,6 +67,51 @@ class UserTask(Base):
 
 
 # ============================================================
+# K230 监测计划表（用户自定义定时监测）
+# ============================================================
+class MonitorSchedule(Base):
+    __tablename__ = "monitor_schedules"
+
+    id          = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id     = Column(Integer, nullable=False, index=True)
+    title       = Column(String(200), nullable=False, comment="计划名称，如'上午学习监测'")
+    start_time  = Column(String(5), nullable=False, comment="开始时间 HH:MM")
+    end_time    = Column(String(5), nullable=False, comment="结束时间 HH:MM")
+    weekdays    = Column(String(20), nullable=False, default="1,2,3,4,5", comment="重复星期，逗号分隔")
+    is_active   = Column(Boolean, nullable=False, default=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================================
+# 签到记录表
+# ============================================================
+class CheckIn(Base):
+    __tablename__ = "checkins"
+
+    id         = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id    = Column(Integer, nullable=False, index=True)
+    check_date = Column(Date, nullable=False, comment="签到日期")
+    source     = Column(String(20), nullable=False, default="auto", comment="auto=自动签到, card=补签卡")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================================
+# 权限申请表
+# ============================================================
+class Application(Base):
+    __tablename__ = "applications"
+
+    id           = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id      = Column(Integer, nullable=False, index=True, comment="申请人")
+    apply_type   = Column(String(30), nullable=False, comment="role_upgrade=申请管理员 / perm_points=申请积分管理")
+    target_role  = Column(String(20), nullable=True, comment="目标角色（role_upgrade时使用）")
+    reason       = Column(String(500), nullable=True, comment="申请理由")
+    status       = Column(String(20), nullable=False, default="pending", comment="pending/admin_approved/super_approved/rejected")
+    reviewed_by  = Column(Integer, nullable=True, comment="审核人ID")
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================================
 # 坐姿记录表
 # 每条记录 = K230 板端上传的一次坐姿检测结果
 # 5 项指标通过几何算法从 YOLOv8-Pose 的 17 个关键点计算得出

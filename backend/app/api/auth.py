@@ -7,8 +7,8 @@ JWT Token 流程:
   3. 后端解析 JWT → 获取 user_id → 查数据库 → 返回对应数据
 """
 
-from datetime import date as date_type
-from fastapi import APIRouter, Depends, HTTPException, Header
+from datetime import date as date_type, timedelta, datetime as dt
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 import json, os
@@ -331,14 +331,13 @@ def generate_daily_tasks(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """为用户生成今日任务（并自动清理昨日未完成任务）"""
+    """为用户生成今日任务（并自动清理昨日所有任务）"""
     from datetime import datetime as dt
     today_start = dt.combine(date_type.today(), dt.min.time())
-    # 清理昨天及以前的未完成任务
+    # 清理昨天及以前的所有每日任务（不管完成与否）
     db.query(models.UserTask).filter(
         models.UserTask.user_id == current_user.id,
         models.UserTask.task_type == "daily",
-        models.UserTask.status == "pending",
         models.UserTask.created_at < today_start,
     ).delete()
     db.commit()
@@ -365,6 +364,336 @@ def generate_daily_tasks(
         db.add(t)
     db.commit()
     return {"status": "success", "count": len(daily_tasks)}
+
+
+# ============================================================
+# 签到 + 补签卡
+# ============================================================
+@router.post("/checkin")
+def do_checkin(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """每日签到，奖励 5 积分"""
+    from datetime import timezone, timedelta as td
+    today = (dt.utcnow() + td(hours=8)).date()
+    existing = db.query(models.CheckIn).filter(
+        models.CheckIn.user_id == current_user.id,
+        models.CheckIn.check_date == today,
+    ).first()
+    if existing:
+        return {"status": "already_checked", "points": current_user.points}
+
+    ci = models.CheckIn(user_id=current_user.id, check_date=today, source="auto")
+    db.add(ci)
+    current_user.points = (current_user.points or 0) + 5
+    db.commit()
+    return {"status": "success", "points_earned": 5, "total_points": current_user.points}
+
+
+@router.get("/checkin/status")
+def checkin_status(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """获取签到状态：连续天数 + 本月签到列表 + 积分"""
+    from datetime import timezone, timedelta as td
+    today = (dt.utcnow() + td(hours=8)).date()
+    # 连续签到天数
+    streak = 0
+    d = today
+    while True:
+        ci = db.query(models.CheckIn).filter(
+            models.CheckIn.user_id == current_user.id,
+            models.CheckIn.check_date == d,
+        ).first()
+        if ci: streak += 1; d = d - timedelta(days=1)
+        else: break
+
+    # 本月签到
+    month_start = today.replace(day=1)
+    month_checkins = db.query(models.CheckIn).filter(
+        models.CheckIn.user_id == current_user.id,
+        models.CheckIn.check_date >= month_start,
+    ).all()
+
+    return {
+        "streak": streak,
+        "total_points": current_user.points or 0,
+        "checkin_dates": [c.check_date.isoformat() for c in month_checkins],
+        "today_checked": today.isoformat() in [c.check_date.isoformat() for c in month_checkins],
+    }
+
+
+@router.post("/checkin/buy-card")
+def buy_makeup_card(
+    target_date: str = None,  # 要补签的日期 YYYY-MM-DD
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """用积分补签最近15天内的任意一天"""
+    from datetime import timezone, timedelta as td
+    today = (dt.utcnow() + td(hours=8)).date()
+    cost = 50
+
+    if target_date:
+        try:
+            fill_date = date_type.fromisoformat(target_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="日期格式错误，使用 YYYY-MM-DD")
+    else:
+        fill_date = today - timedelta(days=1)
+
+    # 限制补签范围：15天内且不能是未来
+    if fill_date > today:
+        raise HTTPException(status_code=400, detail="不能补签未来日期")
+    if (today - fill_date).days > 15:
+        raise HTTPException(status_code=400, detail="只能补签最近15天")
+
+    if (current_user.points or 0) < cost:
+        raise HTTPException(status_code=400, detail=f"积分不足，需要 {cost} 分，当前 {current_user.points} 分")
+
+    exists = db.query(models.CheckIn).filter(
+        models.CheckIn.user_id == current_user.id,
+        models.CheckIn.check_date == fill_date,
+    ).first()
+    if exists:
+        raise HTTPException(status_code=400, detail=f"{fill_date} 已签到，无需补签")
+
+    ci = models.CheckIn(user_id=current_user.id, check_date=fill_date, source="card")
+    db.add(ci)
+    current_user.points = current_user.points - cost
+    db.commit()
+    return {"status": "success", "cost": cost, "total_points": current_user.points, "filled_date": fill_date.isoformat()}
+
+
+# ============================================================
+# 管理员积分管理 + 权限申请
+# ============================================================
+@router.put("/admin/users/{user_id}/points")
+def admin_set_points(
+    user_id: int,
+    points: int,
+    admin: models.User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """超级管理员：设置用户积分"""
+    target = crud.get_user_by_id(db, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    target.points = points
+    db.commit()
+    return {"status": "success", "user_id": user_id, "points": points}
+
+
+# ============================================================
+# 权限申请 & 审批
+# ============================================================
+@router.post("/apply")
+def apply_permission(
+    apply_type: str = Query(..., description="role_upgrade 或 perm_points"),
+    target_role: str = Query(None),
+    reason: str = Query(""),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """用户/管理员提交权限申请"""
+    if apply_type == "role_upgrade":
+        if not target_role or target_role not in ("admin",):
+            raise HTTPException(status_code=400, detail="目标角色无效")
+        if current_user.role == target_role:
+            raise HTTPException(status_code=400, detail="你已经是该角色")
+        if current_user.role == "super_admin":
+            raise HTTPException(status_code=400, detail="你已是最高权限")
+
+    # 检查是否有待处理的同类申请
+    existing = db.query(models.Application).filter(
+        models.Application.user_id == current_user.id,
+        models.Application.apply_type == apply_type,
+        models.Application.status == "pending",
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="已有待处理的同类申请")
+
+    app = models.Application(user_id=current_user.id, apply_type=apply_type,
+                              target_role=target_role, reason=reason, status="pending")
+    db.add(app)
+    db.commit()
+    return {"status": "success", "message": "申请已提交"}
+
+
+@router.get("/applications")
+def list_applications(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """查看与我相关的申请（我发的 + 需要我审批的）"""
+    # 我提交的
+    my_apps = db.query(models.Application).filter(
+        models.Application.user_id == current_user.id,
+    ).order_by(models.Application.created_at.desc()).all()
+
+    # 需要我审批的
+    review_apps = []
+    if current_user.role == "admin":
+        # 管理员可以批准普通用户的 role_upgrade 申请
+        review_apps = db.query(models.Application).filter(
+            models.Application.status == "pending",
+            models.Application.apply_type == "role_upgrade",
+        ).all()
+    elif current_user.role == "super_admin":
+        # 超级管理员可以审批所有
+        review_apps = db.query(models.Application).filter(
+            models.Application.status.in_(["pending", "admin_approved"]),
+        ).all()
+
+    def fmt(a):
+        u = crud.get_user_by_id(db, a.user_id)
+        return {"id": a.id, "user_id": a.user_id, "username": u.username if u else "?",
+                "apply_type": a.apply_type, "target_role": a.target_role, "reason": a.reason,
+                "status": a.status, "created_at": a.created_at.isoformat()}
+
+    return {"my_applications": [fmt(a) for a in my_apps],
+            "review_applications": [fmt(a) for a in review_apps]}
+
+
+@router.post("/applications/{app_id}/approve")
+def approve_application(
+    app_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """审批申请"""
+    app = db.query(models.Application).filter(models.Application.id == app_id).first()
+    if not app:
+        raise HTTPException(status_code=404, detail="申请不存在")
+
+    applicant = crud.get_user_by_id(db, app.user_id)
+    if not applicant:
+        raise HTTPException(status_code=404, detail="申请人不存在")
+
+    is_admin = current_user.role in ("admin", "super_admin")
+    is_super = current_user.role == "super_admin"
+
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+
+    if app.apply_type == "role_upgrade" and app.target_role == "admin":
+        # 管理员先批准 → 变为 admin_approved → 超管最终审核
+        if is_super:
+            app.status = "super_approved"
+            crud.update_user(db, app.user_id, {"role": "admin"})
+            db.commit()
+            return {"status": "success", "message": f"{applicant.username} 已升级为管理员"}
+        else:
+            app.status = "admin_approved"
+            app.reviewed_by = current_user.id
+            db.commit()
+            return {"status": "success", "message": "已批准，等待超级管理员最终审核"}
+
+    if app.apply_type == "perm_points":
+        if is_super:
+            app.status = "super_approved"
+            app.reviewed_by = current_user.id
+            db.commit()
+            return {"status": "success", "message": f"{applicant.username} 已获得积分管理权限"}
+        else:
+            app.status = "admin_approved"
+            app.reviewed_by = current_user.id
+            db.commit()
+            return {"status": "success", "message": "已推荐，等待超级管理员最终审核"}
+
+    raise HTTPException(status_code=400, detail="未知申请类型")
+
+
+@router.post("/applications/{app_id}/reject")
+def reject_application(
+    app_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """拒绝申请"""
+    app = db.query(models.Application).filter(models.Application.id == app_id).first()
+    if not app: raise HTTPException(status_code=404, detail="申请不存在")
+    if current_user.role not in ("admin", "super_admin"):
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    app.status = "rejected"
+    app.reviewed_by = current_user.id
+    db.commit()
+    return {"status": "success", "message": "已拒绝"}
+
+
+# ============================================================
+# K230 监测计划
+# ============================================================
+@router.get("/monitor-schedules")
+def get_schedules(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """获取用户的监测计划列表"""
+    schedules = db.query(models.MonitorSchedule).filter(
+        models.MonitorSchedule.user_id == current_user.id,
+    ).order_by(models.MonitorSchedule.created_at.desc()).all()
+    return {"schedules": [
+        {"id": s.id, "title": s.title, "start_time": s.start_time, "end_time": s.end_time,
+         "weekdays": s.weekdays, "is_active": s.is_active}
+        for s in schedules
+    ]}
+
+
+@router.post("/monitor-schedules")
+def create_schedule(
+    title: str, start_time: str, end_time: str,
+    weekdays: str = "1,2,3,4,5",
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """创建监测计划"""
+    s = models.MonitorSchedule(user_id=current_user.id, title=title,
+                                start_time=start_time, end_time=end_time, weekdays=weekdays)
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return {"status": "success", "id": s.id}
+
+
+@router.put("/monitor-schedules/{sid}")
+def update_schedule(
+    sid: int,
+    title: str = None, start_time: str = None, end_time: str = None,
+    weekdays: str = None, is_active: bool = None,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """编辑监测计划"""
+    s = db.query(models.MonitorSchedule).filter(
+        models.MonitorSchedule.id == sid,
+        models.MonitorSchedule.user_id == current_user.id,
+    ).first()
+    if not s: raise HTTPException(status_code=404, detail="计划不存在")
+    if title is not None: s.title = title
+    if start_time is not None: s.start_time = start_time
+    if end_time is not None: s.end_time = end_time
+    if weekdays is not None: s.weekdays = weekdays
+    if is_active is not None: s.is_active = is_active
+    db.commit()
+    return {"status": "success"}
+
+
+@router.delete("/monitor-schedules/{sid}")
+def delete_schedule(
+    sid: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """删除监测计划"""
+    db.query(models.MonitorSchedule).filter(
+        models.MonitorSchedule.id == sid,
+        models.MonitorSchedule.user_id == current_user.id,
+    ).delete()
+    db.commit()
+    return {"status": "success"}
 
 @router.put("/admin/tasks/{task_id}")
 def admin_update_task(

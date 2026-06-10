@@ -17,7 +17,8 @@ from .db.crud import get_user_by_username, create_user
 from .utils.security import hash_password
 from sqlalchemy import text
 import asyncio
-from .api import data, auth, ml, chat
+from .api import data, auth, ml, chat, ws
+from .services import video_proxy
 from .utils.logger import logger
 from .tasks.scheduler import run_scheduler
 
@@ -112,6 +113,8 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(data.router, prefix="/api/v1/data", tags=["data"])
 app.include_router(ml.router, prefix="/api/v1/ml", tags=["ml"])
 app.include_router(chat.router, prefix="/api/v1/chat", tags=["chat"])
+app.include_router(ws.router, tags=["ws"])
+app.include_router(video_proxy.router, tags=["video"])
 
 
 @app.get("/")

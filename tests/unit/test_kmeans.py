@@ -5,13 +5,16 @@ import numpy as np
 from pathlib import Path
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "backend" / "app" / "core"))
+# 使用 conftest 已有的 sys.path 配置
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "backend"))
 
-from kmeans_cluster import find_optimal_k, prepare_features, CLUSTER_NAMES
-from data_preprocess import MockRecord, make_records
+from app.core.kmeans_cluster import find_optimal_k, prepare_features, CLUSTER_NAMES
+from app.core.data_preprocess import METRIC_COLUMNS
+from datetime import datetime
 
 
 class MockRecord:
+    """模拟 SQLAlchemy 记录对象"""
     def __init__(self, head_angle, shoulder_diff, hunchback_score, body_tilt, round_shoulder, created_at):
         self.head_angle = head_angle
         self.shoulder_diff = shoulder_diff

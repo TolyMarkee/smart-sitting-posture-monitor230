@@ -9,11 +9,16 @@
 - 缓存过期清理（超过7天的缓存自动删除）
 """
 
-import json
 import os
 import time
 import gc
 from datetime import datetime, timedelta
+
+# K230 MicroPython 使用 ujson
+try:
+    import ujson as json
+except ImportError:
+    import json
 
 # K230 MicroPython 的 urequests 库
 try:

@@ -1,6 +1,6 @@
 # 数据接口：上传 + 历史查询 + 聚合统计
 
-import os, json, httpx
+import os, json, httpx, asyncio
 from datetime import datetime, date, timedelta
 from typing import Optional
 import random
@@ -10,6 +10,7 @@ from ..db.session import get_db
 from ..db import crud
 from ..schemas.posture import PostureCreate
 from ..core.data_preprocess import preprocess_pipeline, aggregate_daily
+from ..api.ws import manager
 
 router = APIRouter()
 
@@ -106,14 +107,73 @@ def get_weather(
     return {"status": "error", "message": "天气服务不可用"}
 
 
+# ---- 城市查询（高德）----
+@router.get("/city-lookup")
+def city_lookup(name: str = Query(...)):
+    """根据城市名模糊查询 adcode（返回匹配列表，用于联想搜索）"""
+    settings_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "settings.json"))
+    amap_key = ""
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r", encoding="utf-8") as f:
+                amap_key = json.load(f).get("amap_key", "")
+        except Exception:
+            pass
+
+    if not amap_key:
+        return {"status": "error", "message": "管理员未配置高德API Key"}
+
+    try:
+        resp = httpx.get(
+            "https://restapi.amap.com/v3/config/district",
+            params={"key": amap_key, "keywords": name, "subdistrict": 0, "offset": 10},
+            timeout=10,
+        )
+        data = resp.json()
+        results = []
+        if data.get("districts"):
+            for d in data["districts"]:
+                # 只返回市级行政区
+                if d.get("level") == "city" and d.get("adcode"):
+                    results.append({"adcode": d["adcode"], "name": d["name"]})
+            # 如果没找到市级结果，返回第一个有效结果
+            if not results:
+                for d in data["districts"]:
+                    if d.get("adcode"):
+                        results.append({"adcode": d["adcode"], "name": d["name"]})
+        return {"status": "success", "cities": results[:10]}
+    except Exception:
+        pass
+    return {"status": "error", "message": "城市查询失败"}
+
+
 @router.post("/upload")
-def upload_posture_data(record: PostureCreate, db: Session = Depends(get_db)):
-    """接收边缘端上传的单条坐姿数据"""
+async def upload_posture_data(record: PostureCreate, db: Session = Depends(get_db)):
+    """接收边缘端上传的单条坐姿数据，并通过 WebSocket 广播"""
     data = record.model_dump(exclude={"timestamp"})
     if record.timestamp:
         data["created_at"] = record.timestamp
 
     db_record = crud.create_posture_record(db, data)
+
+    # 异步广播给所有 WebSocket 客户端（不阻塞 HTTP 响应）
+    broadcast_data = {
+        "type": "new_data",
+        "payload": {
+            "id": db_record.id,
+            "user_id": db_record.user_id,
+            "head_angle": db_record.head_angle,
+            "shoulder_diff": db_record.shoulder_diff,
+            "hunchback_score": db_record.hunchback_score,
+            "body_tilt": db_record.body_tilt,
+            "round_shoulder": db_record.round_shoulder,
+            "posture_label": db_record.posture_label,
+            "confidence": db_record.confidence,
+            "created_at": db_record.created_at.isoformat(),
+        }
+    }
+    asyncio.create_task(manager.broadcast(broadcast_data))
+
     return {"status": "success", "id": db_record.id}
 
 
@@ -209,7 +269,7 @@ def get_daily_summary(
     end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
     db: Session = Depends(get_db),
 ):
-    """获取每日统计汇总（优先用 daily_stats 表，无数据时实时聚合）"""
+    """获取每日统计汇总（实时聚合）"""
     if not start_date or not end_date:
         today = date.today()
         end_date = end_date or today.isoformat()
@@ -221,30 +281,7 @@ def get_daily_summary(
     except ValueError:
         raise HTTPException(status_code=400, detail="日期格式错误，使用 YYYY-MM-DD")
 
-    stats = crud.get_daily_stats_by_range(db, user_id, start, end)
-
-    # 如果 daily_stats 表有缓存，直接返回
-    if stats:
-        return {
-            "status": "success",
-            "count": len(stats),
-            "stats": [
-                {
-                    "stat_date": s.stat_date.isoformat(),
-                    "avg_head_angle": s.avg_head_angle,
-                    "avg_shoulder_diff": s.avg_shoulder_diff,
-                    "avg_hunchback_score": s.avg_hunchback_score,
-                    "avg_body_tilt": s.avg_body_tilt,
-                    "avg_round_shoulder": s.avg_round_shoulder,
-                    "record_count": s.record_count,
-                    "bad_posture_ratio": s.bad_posture_ratio,
-                    "worst_label": s.worst_label,
-                }
-                for s in stats
-            ],
-        }
-
-    # 无缓存时实时聚合
+    # 实时从原始数据聚合（始终最新）
     start_dt = datetime.fromisoformat(start_date + "T00:00:00")
     end_dt = datetime.fromisoformat(end_date + "T23:59:59")
     records = crud.get_records_by_time_range(db, user_id, start_dt, end_dt, limit=50000)

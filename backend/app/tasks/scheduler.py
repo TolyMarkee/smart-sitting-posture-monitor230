@@ -53,20 +53,41 @@ async def aggregate_yesterday():
         db.close()
 
 
+async def clean_old_tasks():
+    """清理过期的未完成每日任务"""
+    from ..db.session import SessionLocal
+    from ..db import models
+    from datetime import date as dt_date, datetime as dt
+
+    db = SessionLocal()
+    try:
+        today_start = dt.combine(dt_date.today(), dt.min.time())
+        deleted = db.query(models.UserTask).filter(
+            models.UserTask.task_type == "daily",
+            models.UserTask.created_at < today_start,
+        ).delete()
+        db.commit()
+        if deleted > 0:
+            logger.info(f"[Scheduler] 清理了 {deleted} 条过期任务")
+    except Exception as e:
+        logger.error(f"[Scheduler] 清理任务失败: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 async def run_scheduler():
-    """后台定时任务循环（每天凌晨执行一次）"""
-    logger.info("[Scheduler] 定时任务已启动，每天凌晨 1:00 执行聚合")
+    """后台定时任务循环 — 每天凌晨执行聚合 + 清理过期任务"""
+    logger.info("[Scheduler] 定时任务已启动，每天凌晨 1:00 执行")
 
     while True:
         now = datetime.now()
-
-        # 计算距离下一次凌晨 1:00 的秒数
         next_run = now.replace(hour=1, minute=0, second=0, microsecond=0)
         if now >= next_run:
             next_run += timedelta(days=1)
-
         wait_seconds = (next_run - now).total_seconds()
         logger.info(f"[Scheduler] 下次执行: {next_run.strftime('%Y-%m-%d %H:%M:%S')} ({wait_seconds/3600:.1f}h)")
-
         await asyncio.sleep(wait_seconds)
+
+        await clean_old_tasks()
         await aggregate_yesterday()

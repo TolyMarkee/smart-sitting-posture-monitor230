@@ -32,5 +32,9 @@ export const usePostureStore = defineStore('posture', () => {
     return data
   }
 
-  return { latest, history, dailyStats, loading, fetchLatest, fetchHistory, fetchDailySummary }
+  function updateLatest(payload) {
+    latest.value = payload
+  }
+
+  return { latest, history, dailyStats, loading, fetchLatest, fetchHistory, fetchDailySummary, updateLatest }
 })

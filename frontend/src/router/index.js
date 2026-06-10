@@ -48,6 +48,18 @@ const routes = [
     meta: { title: '智能客服', requiresAuth: true },
   },
   {
+    path: '/posture-calendar',
+    name: 'PostureCalendar',
+    component: () => import('../views/PostureCalendar.vue'),
+    meta: { title: '14天坐姿分析', requiresAuth: true },
+  },
+  {
+    path: '/calendar',
+    name: 'CalendarView',
+    component: () => import('../views/CalendarView.vue'),
+    meta: { title: '坐姿日历', requiresAuth: true },
+  },
+  {
     path: '/activities',
     name: 'Activities',
     component: () => import('../views/Activities.vue'),
