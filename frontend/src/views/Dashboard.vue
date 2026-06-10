@@ -7,6 +7,7 @@ import { useUserStore } from '../store/user'
 import request from '../api/request'
 import RealTimeIndicator from '../components/RealTimeIndicator.vue'
 import VideoStreamPanel from '../components/VideoStreamPanel.vue'
+import SkeletonCanvas from '../components/SkeletonCanvas.vue'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useVideoStream } from '../composables/useVideoStream'
 
@@ -22,8 +23,8 @@ const pollCount = ref(0)
 // WebSocket 实时连接（自动回退到轮询）
 const { wsConnected, isFallbackPolling } = useWebSocket()
 
-// 视频流状态
-const { isOnline: videoOnline, streamUrl: videoStreamUrl, snapshotUrl, handleStreamError, retry: retryVideo, startStatusCheck, stopStatusCheck, startSnapshotPolling, stopSnapshotPolling } = useVideoStream()
+// 视频流状态（仅用快照模式）
+const { snapshotUrl, startSnapshotPolling, stopSnapshotPolling } = useVideoStream()
 
 // ── 当前时间 ──
 const nowStr = ref('')
@@ -50,6 +51,7 @@ function updateClock() {
 // ── 打卡统计 ──
 const dailyStats = ref([])
 const streakDays = ref(0)
+const recentRecords = ref([])
 
 async function loadStats() {
   const uid = userStore.userInfo?.user_id || userStore.profile?.id || 1
@@ -72,6 +74,29 @@ async function loadStats() {
     const resp = await request.get('/api/v1/auth/checkin/status')
     streakDays.value = resp.data?.streak || 0
   } catch { /* ignore */ }
+}
+
+// 英文标签→中文
+function postureToChinese(label) {
+  if (!label || label === 'normal') return '良好'
+  const sev = { normal:'正常', mild:'轻度', moderate:'中度', severe:'重度' }
+  const name = { forward_head:'头部前倾', high_low_shoulder:'高低肩', hunched_back:'驼背含胸', body_tilt:'身体倾斜', round_shoulder:'圆肩' }
+  return label.split(';').map(p => {
+    const [t, s] = p.split(':')
+    return (name[t]||t) + (sev[s]? '·'+sev[s] : '')
+  }).join('，').slice(0, 30)
+}
+
+// 显示最大非零指标
+function maxMetric(r) {
+  const vals = [
+    { k: 'head_angle', v: r.head_angle || 0, u: '°前倾' },
+    { k: 'body_tilt', v: r.body_tilt || 0, u: '°倾斜' },
+    { k: 'hunchback_score', v: (r.hunchback_score||0)*100, u: '%驼背' },
+    { k: 'shoulder_diff', v: (r.shoulder_diff||0)*100, u: '%高低肩' },
+  ]
+  const best = vals.sort((a,b) => b.v - a.v)[0]
+  return best.v > 0 ? best.v.toFixed(0) + best.u : '—'
 }
 
 function dayClass(day) {
@@ -131,6 +156,29 @@ function isPostureBad() {
   return label !== 'normal' && label !== ''
 }
 
+// 解析 posture_label → issues 数组
+const parsedIssues = computed(() => {
+  const label = postureStore.latest?.posture_label || ''
+  if (label === 'normal' || !label) return []
+  return label.split(';').filter(Boolean).map(p => {
+    const [type, sev] = p.split(':')
+    const names = { forward_head:'头部前倾', high_low_shoulder:'高低肩', hunched_back:'驼背含胸', body_tilt:'身体倾斜', round_shoulder:'圆肩' }
+    return { type, name: names[type] || type, severity: sev || 'mild' }
+  })
+})
+
+// 中文状态标签
+const chineseStatus = computed(() => {
+  const label = postureStore.latest?.posture_label || ''
+  if (label === 'normal' || !label) return '良好'
+  const sevMap = { normal:'正常', mild:'轻度', moderate:'中度', severe:'重度' }
+  const nameMap = { forward_head:'头部前倾', high_low_shoulder:'高低肩', hunched_back:'驼背含胸', body_tilt:'身体倾斜', round_shoulder:'圆肩' }
+  return label.split(';').filter(Boolean).map(p => {
+    const [type, sev] = p.split(':')
+    return (nameMap[type] || type) + '：' + (sevMap[sev] || sev)
+  }).join('，')
+})
+
 function sendBrowserNotification() {
   if (!notificationGranted.value) return
   try {
@@ -155,6 +203,11 @@ async function refresh() {
   pollCount.value++
   try {
     const data = await postureStore.fetchLatest(uid)
+    // 同时拉最近5条记录
+    try {
+      const hResp = await request.get('/api/v1/data/history', { params: { user_id: uid, limit: 5 } })
+      recentRecords.value = hResp.data.records || []
+    } catch { /* ignore */ }
     if (data.record) {
       lastUpdate.value = formatTime(data.record.created_at)
       if (isPostureBad()) {
@@ -295,8 +348,7 @@ onMounted(() => {
   loadStats()
   loadWeather()
   requestNotification()
-  startStatusCheck()   // 视频流在线检测
-  startSnapshotPolling() // 截图模式轮询
+  startSnapshotPolling() // K230截图轮询
   timer = setInterval(refresh, 3000)
   clockTimer = setInterval(updateClock, 1000)
   petTimer = setInterval(showPetTip, 30000)
@@ -305,7 +357,6 @@ onUnmounted(() => {
   clearInterval(timer)
   clearInterval(clockTimer)
   clearInterval(petTimer)
-  stopStatusCheck()
   stopSnapshotPolling()
 })
 </script>
@@ -381,12 +432,6 @@ onUnmounted(() => {
             <div class="stat-mini-val">{{ (dailyStats[dailyStats.length - 1]?.record_count || 0).toLocaleString() }}</div>
             <div class="stat-mini-lbl">今日记录</div>
           </div>
-          <div class="stat-mini">
-            <div class="stat-mini-val" :style="{ color: (postureStore.latest?.posture_label||'') !== 'normal' ? '#f56c6c' : '#67c23a' }">
-              {{ (postureStore.latest?.posture_label || '--') === 'normal' ? '良好' : (postureStore.latest?.posture_label || '--') }}
-            </div>
-            <div class="stat-mini-lbl">当前状态</div>
-          </div>
         </div>
       </div>
 
@@ -394,22 +439,15 @@ onUnmounted(() => {
       <div class="content-grid">
         <!-- 左：实时指标 -->
         <div class="content-left">
-          <!-- K230 视频流 -->
+          <!-- 视频面板：PC摄像头 + K230骨架叠加 -->
           <VideoStreamPanel
-            :is-online="videoOnline"
-            :stream-url="videoStreamUrl"
             :snapshot-url="snapshotUrl"
-            @error="handleStreamError"
-            @retry="retryVideo"
+            :keypoints-json="postureStore.latest?.keypoints || '[]'"
+            :posture-label="postureStore.latest?.posture_label || 'normal'"
           />
-          <RealTimeIndicator
-            :issues="(postureStore.latest && postureStore.latest.issues) || []"
-            :head-angle="postureStore.latest?.head_angle ?? 0"
-            :shoulder-diff="postureStore.latest?.shoulder_diff ?? 0"
-            :hunchback-score="postureStore.latest?.hunchback_score ?? 0"
-            :body-tilt="postureStore.latest?.body_tilt ?? 0"
-            :round-shoulder="postureStore.latest?.round_shoulder ?? 0"
-            :confidence="postureStore.latest?.confidence ?? 0"
+          <SkeletonCanvas
+            :keypoints-json="postureStore.latest?.keypoints || '[]'"
+            :posture-label="postureStore.latest?.posture_label || 'normal'"
           />
         </div>
 
@@ -442,10 +480,34 @@ onUnmounted(() => {
               <span v-for="i in 7" :key="i" :class="{ filled: i <= Math.min(streakDays, 7) }"></span>
             </div>
           </div>
+          <!-- 最近记录 -->
+          <div class="panel-card recent-panel">
+            <div class="panel-title" style="cursor:pointer" @click="router.push('/history')">最近坐姿记录 <span style="font-size:11px;color:#909399">历史 ›</span></div>
+            <div v-if="recentRecords.length === 0" class="empty-hint">暂无数据</div>
+            <div v-else class="recent-list">
+              <div v-for="r in recentRecords" :key="r.id" class="recent-row">
+                <span class="recent-time">{{ (r.created_at || '').slice(11, 19) }}</span>
+                <span class="recent-status" :style="{ color: r.posture_label === 'normal' ? '#67c23a' : '#f56c6c' }">
+                  {{ postureToChinese(r.posture_label) }}
+                </span>
+                <span class="recent-val">{{ maxMetric(r) }}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- 右：天气 + 快捷入口 -->
+        <!-- 右：实时指标 + 天气 + 快捷入口 -->
         <div class="content-right">
+          <!-- 实时指标卡片 -->
+          <RealTimeIndicator
+            :issues="parsedIssues"
+            :head-angle="postureStore.latest?.head_angle ?? 0"
+            :shoulder-diff="postureStore.latest?.shoulder_diff ?? 0"
+            :hunchback-score="postureStore.latest?.hunchback_score ?? 0"
+            :body-tilt="postureStore.latest?.body_tilt ?? 0"
+            :round-shoulder="postureStore.latest?.round_shoulder ?? 0"
+            :confidence="postureStore.latest?.confidence ?? 0"
+          />
           <!-- 天气大卡片 -->
           <div class="weather-big-card" v-if="weather">
             <div class="weather-main">
@@ -546,6 +608,17 @@ onUnmounted(() => {
       </div>
     </el-dialog>
 
+    <!-- 右下角坐姿状态悬浮卡片 -->
+    <transition name="status-fade">
+      <div v-if="chineseStatus !== '良好'" class="posture-status-float">
+        <div class="status-float-icon">{{ parsedIssues.length >= 3 ? '🛑' : parsedIssues.length >= 2 ? '⚠️' : '🔔' }}</div>
+        <div class="status-float-text">
+          <div class="status-float-title">当前坐姿</div>
+          <div class="status-float-detail">{{ chineseStatus }}</div>
+        </div>
+      </div>
+    </transition>
+
     <!-- 悬浮AI助手 -->
     <div class="ai-pet" :style="petStyle" @mousedown="startDrag" ref="petRef" v-show="!petHidden">
       <div class="pet-bubble" v-if="petMsg" @click="petMsg=''">{{ petMsg }}</div>
@@ -612,7 +685,7 @@ onUnmounted(() => {
 .stat-mini-lbl { font-size: 11px; color: #909399; margin-top: 2px; }
 
 /* 三栏网格 */
-.content-grid { display: grid; grid-template-columns: 340px 1fr 260px; gap: 16px; }
+.content-grid { display: grid; grid-template-columns: 340px 1fr 320px; gap: 16px; }
 
 /* 卡片 */
 .panel-card {
@@ -713,4 +786,34 @@ onUnmounted(() => {
 .pet-bubble::after { content: ''; position: absolute; bottom: -6px; right: 20px; width: 12px; height: 12px; background: #fff; transform: rotate(45deg); }
 @keyframes petBounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
 @keyframes fadeInUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+/* 右下角坐姿状态悬浮卡片 */
+.posture-status-float {
+  position: fixed; bottom: 24px; right: 24px;
+  background: linear-gradient(135deg, rgba(245,108,108,0.95), rgba(245,108,108,0.85));
+  backdrop-filter: blur(12px);
+  border-radius: 16px; padding: 16px 20px;
+  display: flex; align-items: center; gap: 14px;
+  color: #fff; z-index: 998;
+  box-shadow: 0 8px 32px rgba(245,108,108,0.4);
+  animation: statusPulse 2s ease-in-out infinite;
+  min-width: 260px;
+}
+.status-float-icon { font-size: 36px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3)); }
+.status-float-title { font-size: 11px; opacity: 0.8; letter-spacing: 1px; }
+.status-float-detail { font-size: 15px; font-weight: 700; line-height: 1.4; }
+@keyframes statusPulse {
+  0%, 100% { box-shadow: 0 8px 32px rgba(245,108,108,0.4); }
+  50% { box-shadow: 0 8px 48px rgba(245,108,108,0.7); }
+}
+/* 最近记录 */
+.recent-list { max-height: 220px; overflow-y: auto; }
+.recent-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #f5f5f5; font-size: 13px; }
+.recent-row:last-child { border-bottom: none; }
+.recent-time { color: #909399; font-family: monospace; min-width: 60px; }
+.recent-status { font-weight: 600; flex: 1; margin: 0 8px; }
+.recent-val { color: #303133; font-weight: 700; }
+
+.status-fade-enter-active { animation: slideUp 0.4s ease; }
+.status-fade-leave-active { animation: slideUp 0.3s ease reverse; }
+@keyframes slideUp { from { opacity:0; transform:translateY(30px); } to { opacity:1; transform:translateY(0); } }
 </style>

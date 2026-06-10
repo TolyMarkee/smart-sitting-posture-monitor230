@@ -13,4 +13,5 @@ class PostureCreate(BaseModel):
     round_shoulder: float
     posture_label: str
     confidence: float
-    timestamp: Optional[datetime] = None   # 若上传则使用，要不就是后端自动生成
+    timestamp: Optional[datetime] = None
+    keypoints: Optional[str] = None  # JSON: [[x,y,conf], ...] x17 个关键点

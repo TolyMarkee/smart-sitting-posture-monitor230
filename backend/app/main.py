@@ -38,6 +38,14 @@ def migrate_tables():
                 conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {col_def}"))
             except Exception:
                 pass  # 字段已存在则忽略
+        # posture_records 新增字段
+        for col, col_def in [
+            ("keypoints", "TEXT NULL"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE posture_records ADD COLUMN {col} {col_def}"))
+            except Exception:
+                pass
         conn.commit()
 
 

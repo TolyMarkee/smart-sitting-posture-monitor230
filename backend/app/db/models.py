@@ -128,6 +128,7 @@ class PostureRecord(Base):
     round_shoulder  = Column(Float, nullable=True, comment="圆肩比例 = 肩肘中点偏移/肩宽")
     posture_label   = Column(String(50), nullable=True, comment="综合标签: normal/mild/moderate/severe")
     confidence      = Column(Float, nullable=True, comment="YOLOv8-Pose 检测置信度")
+    keypoints       = Column(Text, nullable=True, comment="17个关键点JSON")
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
 
 

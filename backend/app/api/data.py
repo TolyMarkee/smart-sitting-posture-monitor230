@@ -169,6 +169,7 @@ async def upload_posture_data(record: PostureCreate, db: Session = Depends(get_d
             "round_shoulder": db_record.round_shoulder,
             "posture_label": db_record.posture_label,
             "confidence": db_record.confidence,
+            "keypoints": db_record.keypoints if db_record.keypoints else "[]",
             "created_at": db_record.created_at.isoformat(),
         }
     }
@@ -195,6 +196,7 @@ def get_latest_record(user_id: int = Query(...), db: Session = Depends(get_db)):
             "round_shoulder": record.round_shoulder,
             "posture_label": record.posture_label,
             "confidence": record.confidence,
+                "keypoints": record.keypoints,
             "created_at": record.created_at.isoformat(),
         },
     }
@@ -255,6 +257,7 @@ def get_history_records(
                 "round_shoulder": r.round_shoulder,
                 "posture_label": r.posture_label,
                 "confidence": r.confidence,
+                    "keypoints": r.keypoints,
                 "created_at": r.created_at.isoformat(),
             }
             for r in records
