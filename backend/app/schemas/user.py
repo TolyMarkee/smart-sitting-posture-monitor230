@@ -40,6 +40,7 @@ class UserProfile(BaseModel):
     phone: Optional[str] = None
     avatar_url: Optional[str] = None
     role: str
+    points: int = 0
     is_active: bool
     created_at: str
 

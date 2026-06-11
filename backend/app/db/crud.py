@@ -92,6 +92,22 @@ def get_chat_history(db: Session, user_id: int, limit: int = 100) -> List[models
     )
 
 
+def count_today_messages(db: Session, user_id: int) -> int:
+    """统计用户今日对话次数（role=user的消息数）"""
+    from datetime import date, datetime
+    today = date.today()
+    start = datetime(today.year, today.month, today.day)
+    return (
+        db.query(models.ChatHistory)
+        .filter(
+            models.ChatHistory.user_id == user_id,
+            models.ChatHistory.role == "user",
+            models.ChatHistory.created_at >= start,
+        )
+        .count()
+    )
+
+
 def clear_chat_history(db: Session, user_id: int):
     """清空用户聊天记录"""
     db.query(models.ChatHistory).filter(models.ChatHistory.user_id == user_id).delete()

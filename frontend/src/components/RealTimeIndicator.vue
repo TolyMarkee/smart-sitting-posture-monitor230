@@ -43,6 +43,14 @@ function severityTag(severity) {
   return map[severity] || '未知'
 }
 
+// 指标严重程度颜色（与K230 LCD一致）
+function metricColor(val, thresholds) {
+  if (val >= thresholds[2]) return '#ff0000'  // 重度
+  if (val >= thresholds[1]) return '#f56c6c'  // 中度
+  if (val >= thresholds[0]) return '#e6a23c'  // 轻度
+  return '#67c23a'  // 正常
+}
+
 function issueIcon(type) {
   const map = {
     forward_head: '👤',
@@ -96,23 +104,23 @@ function issueIcon(type) {
       <template #header>详细指标</template>
       <div class="metric-row">
         <span>头部前倾角度</span>
-        <span>{{ headAngle.toFixed(1) }}°</span>
+        <span :style="{ color: metricColor(headAngle, [40,50,60]), fontWeight: '700' }">{{ headAngle.toFixed(1) }}°</span>
       </div>
       <div class="metric-row">
         <span>高低肩比例</span>
-        <span>{{ (shoulderDiff * 100).toFixed(1) }}%</span>
+        <span :style="{ color: metricColor(shoulderDiff*100, [5,8,12]), fontWeight: '700' }">{{ (shoulderDiff * 100).toFixed(1) }}%</span>
       </div>
       <div class="metric-row">
         <span>驼背前倾比例</span>
-        <span>{{ (hunchbackScore * 100).toFixed(1) }}%</span>
+        <span :style="{ color: metricColor(hunchbackScore*100, [30,50,70]), fontWeight: '700' }">{{ (hunchbackScore * 100).toFixed(1) }}%</span>
       </div>
       <div class="metric-row">
         <span>身体倾斜角度</span>
-        <span>{{ bodyTilt.toFixed(1) }}°</span>
+        <span :style="{ color: metricColor(bodyTilt, [5,10,15]), fontWeight: '700' }">{{ bodyTilt.toFixed(1) }}°</span>
       </div>
       <div class="metric-row">
         <span>圆肩比例</span>
-        <span>{{ (roundShoulder * 100).toFixed(1) }}%</span>
+        <span :style="{ color: metricColor(roundShoulder*100, [20,30,50]), fontWeight: '700' }">{{ (roundShoulder * 100).toFixed(1) }}%</span>
       </div>
       <div class="metric-row">
         <span>检测置信度</span>

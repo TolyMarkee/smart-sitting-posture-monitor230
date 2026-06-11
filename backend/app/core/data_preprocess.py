@@ -46,9 +46,19 @@ def records_to_dataframe(records: list) -> pd.DataFrame:
     return df
 
 
+# 各指标的物理有效范围（超出直接丢弃）
+VALID_RANGES = {
+    "head_angle":      (0.0, 80.0),     # 0~80°
+    "shoulder_diff":   (0.0, 0.4),      # 比例 0~0.4（>0.4为明显误判）
+    "hunchback_score": (0.0, 0.9),      # 比例 0~0.9
+    "body_tilt":       (0.0, 40.0),     # 0~40°
+    "round_shoulder":  (0.0, 0.8),      # 比例 0~0.8
+}
+
+
 def remove_outliers(df: pd.DataFrame, n_std: float = 3.0) -> pd.DataFrame:
     """
-    用 Z-score 方法去除异常值
+    去除异常值：先硬边界过滤 → 再 Z-score 统计过滤
 
     Args:
         df: 原始 DataFrame
@@ -60,13 +70,33 @@ def remove_outliers(df: pd.DataFrame, n_std: float = 3.0) -> pd.DataFrame:
     if df.empty:
         return df
 
+    # 第一层：硬边界过滤 — 物理上不可能的值直接丢弃
     mask = pd.Series(True, index=df.index)
+    rejected = {k: 0 for k in VALID_RANGES}
+    for col, (vmin, vmax) in VALID_RANGES.items():
+        if col in df.columns:
+            col_mask = (df[col] >= vmin) & (df[col] <= vmax)
+            rejected[col] = (~col_mask).sum()
+            mask &= col_mask
+
+    total_rejected = sum(rejected.values())
+    if total_rejected > 0:
+        import logging
+        logging.warning(f"[Preprocess] 硬边界过滤: 丢弃 {total_rejected} 条异常记录 {rejected}")
+
+    df = df[mask].copy()
+
+    if df.empty:
+        return df
+
+    # 第二层：Z-score 统计过滤
+    mask2 = pd.Series(True, index=df.index)
     for col in METRIC_COLUMNS:
         if col in df.columns and df[col].notna().any():
             z = np.abs((df[col] - df[col].mean()) / (df[col].std() + 1e-9))
-            mask &= z < n_std
+            mask2 &= z < n_std
 
-    return df[mask].copy()
+    return df[mask2].copy()
 
 
 def fill_missing(df: pd.DataFrame) -> pd.DataFrame:

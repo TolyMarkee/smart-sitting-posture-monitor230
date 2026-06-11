@@ -1,10 +1,25 @@
 <script setup>
-import { ref, nextTick, onMounted } from 'vue'
+import PageTitle from "../components/PageTitle.vue"
+import { ref, nextTick, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { chatApi } from '../api/chat'
 import { useUserStore } from '../store/user'
+import { useAiPet } from '../composables/useAiPet'
 
 const userStore = useUserStore()
+const { currentPet, switchPet: globalSwitch } = useAiPet()
+const petAvatar = computed(() => '/pets/' + currentPet.value + '.png')
+
+const allPetDefs = [
+  { id: 'cat', name: '小猫', img: '/pets/cat.png' },
+  { id: 'dog', name: '小狗', img: '/pets/dog.png' },
+  { id: 'fox', name: '狐狸', img: '/pets/fox.png' },
+  { id: 'hamster', name: '仓鼠', img: '/pets/hamster.png' },
+  { id: 'neko', name: '猫娘', img: '/pets/neko.png' },
+]
+const ownedPets = computed(() => JSON.parse(localStorage.getItem('owned_pets') || '["cat"]'))
+const ownedPetList = computed(() => allPetDefs.filter(p => ownedPets.value.includes(p.id)))
+function switchPet(id) { globalSwitch(id); ElMessage.success('已切换伙伴') }
 
 const DEFAULT_WELCOME = {
   role: 'assistant',
@@ -18,6 +33,26 @@ const loading = ref(false)
 const chatBox = ref(null)
 const copyIdx = ref(-1)
 
+// 次数和积分
+const quotaLeft = ref(30)
+const userPoints = ref(0)
+const DAILY_LIMIT = 30
+
+async function loadQuota() {
+  const uid = userStore.userInfo?.user_id
+  if (!uid) return
+  try {
+    // 获取积分
+    const { data: profileData } = await import('../api/request').then(m => m.default.get('/api/v1/auth/profile'))
+    userPoints.value = profileData?.points || 0
+  } catch {}
+  try {
+    // 获取今日已用次数
+    const { data: quotaData } = await import('../api/request').then(m => m.default.get('/api/v1/chat/quota', { params: { user_id: uid } }))
+    quotaLeft.value = Math.max(0, DAILY_LIMIT - (quotaData?.used || 0))
+  } catch { quotaLeft.value = DAILY_LIMIT }
+}
+
 // 加载历史聊天记录（从数据库恢复）
 async function loadHistory() {
   const uid = userStore.userInfo?.user_id
@@ -30,7 +65,7 @@ async function loadHistory() {
   } catch { /* 忽略，使用默认欢迎语 */ }
 }
 
-onMounted(loadHistory)
+onMounted(() => { loadHistory(); loadQuota() })
 
 function scrollBottom() {
   nextTick(() => {
@@ -105,20 +140,24 @@ function clearChat() {
 
 <template>
   <div class="chat-page">
+    <div class="chat-topbar">
+      <div class="chat-topbar-left">
+        <PageTitle>坐姿健康助手</PageTitle>
+        <router-link to="/shop" class="chat-shop-link">🛒 积分商城</router-link>
+      </div>
+      <div class="chat-quota">
+        今日剩余 <b>{{ quotaLeft }}</b> 次 · 积分 <b>{{ userPoints }}</b>
+      </div>
+    </div>
     <div class="chat-container">
       <!-- 头部 -->
       <div class="chat-header">
         <div class="header-main">
           <div class="ai-avatar-lg">
-            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
-              <line x1="9" y1="9" x2="9.01" y2="9" stroke-width="2" stroke-linecap="round"/>
-              <line x1="15" y1="9" x2="15.01" y2="9" stroke-width="2" stroke-linecap="round"/>
-            </svg>
+            <img :src="petAvatar" class="avatar-pet-img" alt="AI宠物" />
           </div>
           <div class="header-text">
-            <h3>坐姿健康助手</h3>
+            <h3 class="chat-title">坐姿健康助手</h3>
             <div class="header-status">
               <span class="status-dot"></span>
               AI 在线 · {{ messages.length }} 条消息
@@ -141,12 +180,7 @@ function clearChat() {
         >
           <!-- 助手头像 -->
           <div v-if="msg.role === 'assistant'" class="avatar avatar-ai">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
-              <line x1="9" y1="9" x2="9.01" y2="9" stroke-width="2" stroke-linecap="round"/>
-              <line x1="15" y1="9" x2="15.01" y2="9" stroke-width="2" stroke-linecap="round"/>
-            </svg>
+            <img :src="petAvatar" class="avatar-pet-img" alt="AI" />
           </div>
 
           <div class="msg-content">
@@ -188,10 +222,7 @@ function clearChat() {
         <!-- 加载动画 -->
         <div v-if="loading" class="msg-wrapper msg-left">
           <div class="avatar avatar-ai">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
-            </svg>
+            <img :src="petAvatar" class="avatar-pet-img" alt="AI" />
           </div>
           <div class="msg-content">
             <div class="msg-bubble bubble-ai">
@@ -245,6 +276,12 @@ function clearChat() {
         </el-button>
       </div>
 
+      <!-- 伙伴切换 -->
+      <div class="pet-switch-row">
+        <img v-for="p in ownedPetList" :key="p.id" :src="p.img"
+          :class="{ active: currentPet.value === p.id }"
+          @click="switchPet(p.id)" :title="p.name" class="pet-switch-img" />
+      </div>
       <div class="disclaimer">
         内容由 AI 生成，仅供参考，不能替代专业医疗诊断
       </div>
@@ -254,16 +291,22 @@ function clearChat() {
 
 <style scoped>
 .chat-page {
-  padding: 20px;
-  display: flex;
-  justify-content: center;
+  padding: 20px 24px; width: 100%; min-height: 100vh;
+  display: flex; flex-direction: column;
   background: #f0f2f5;
-  min-height: calc(100vh - 56px);
 }
+/* 顶部导航条 */
+.chat-topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 16px; }
+.chat-topbar-left { display: flex; align-items: center; gap: 12px; }
+.chat-shop-link { font-size: 13px; color: #409EFF; text-decoration: none; padding: 4px 12px; border-radius: 6px; background: rgba(64,158,255,0.06); transition: all 0.15s; }
+.chat-shop-link:hover { background: rgba(64,158,255,0.15); }
+.chat-quota { font-size: 12px; color: #909399; }
+.chat-quota b { color: #409EFF; }
 
+.chat-title { font-size: 18px; font-weight: 800; margin: 0; letter-spacing: 0.5px; color: #3a4452;
+  text-shadow: 0 1px 1px rgba(255,255,255,0.95), 0 -0.5px 0 rgba(0,0,0,0.06), 0 2px 3px rgba(0,0,0,0.04); }
 .chat-container {
-  width: 760px;
-  max-width: 100%;
+  width: 100%; margin: 0; flex: 1; display: flex; flex-direction: column;
   display: flex;
   flex-direction: column;
   background: #fff;
@@ -330,7 +373,7 @@ function clearChat() {
 /* messages */
 .chat-messages {
   flex: 1;
-  padding: 20px;
+  padding: clamp(14px, 2.5vw, 28px);
   overflow-y: auto;
   max-height: 52vh;
   min-height: 320px;
@@ -506,4 +549,9 @@ function clearChat() {
   background: #fafbfc;
   border-top: 1px solid #f5f5f5;
 }
+.avatar-pet-img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
+.pet-switch-row { display: flex; gap: 8px; padding: 10px 0; justify-content: center; }
+.pet-switch-img { width: 36px; height: auto; image-rendering: pixelated; border-radius: 8px; cursor: pointer; padding: 2px; border: 2px solid transparent; transition: all 0.15s; }
+.pet-switch-img:hover { transform: scale(1.15); }
+.pet-switch-img.active { border-color: #667eea; background: rgba(102,126,234,0.1); }
 </style>

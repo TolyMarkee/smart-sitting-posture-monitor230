@@ -1,4 +1,5 @@
 <script setup>
+import PageTitle from "../components/PageTitle.vue"
 import { ref, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '../store/user'
@@ -46,7 +47,7 @@ onMounted(train)
 <template>
   <div class="cluster-page">
     <div class="page-header">
-      <h3>坐姿模式聚类分析</h3>
+      <PageTitle>坐姿模式聚类分析</PageTitle>
       <el-button type="primary" :loading="loading" @click="train">
         {{ clusterData ? '重新分析' : '开始分析' }}
       </el-button>
@@ -132,7 +133,7 @@ onMounted(train)
 </template>
 
 <style scoped>
-.cluster-page { padding: 20px; min-height: 100vh; background: #f0f2f5; }
+.cluster-page { padding: clamp(14px, 2.5vw, 28px); min-height: 100vh; max-width: 100%; width: 100vw; background: #f0f2f5; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
 .page-header h3 { margin: 0; }
 .stat-value { font-size: 28px; font-weight: 700; text-align: center; color: #303133; }

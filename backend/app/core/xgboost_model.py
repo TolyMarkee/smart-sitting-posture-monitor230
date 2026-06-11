@@ -91,15 +91,22 @@ def predict_health_score(record: dict) -> dict:
     Returns:
         dict: 健康评分 + 各项扣分明细
     """
+    # 输入验证：裁剪到物理有效范围
+    head_angle = max(0, min(90, record.get("head_angle", 0) or 0))
+    shoulder_diff = max(0, min(1, record.get("shoulder_diff", 0) or 0))
+    hunchback_score = max(0, min(1, record.get("hunchback_score", 0) or 0))
+    body_tilt = max(0, min(90, record.get("body_tilt", 0) or 0))
+    round_shoulder = max(0, min(1, record.get("round_shoulder", 0) or 0))
+
     model = load_model("xgboost")
 
     # 特征向量
     features = np.array([[
-        record["head_angle"],
-        record["shoulder_diff"],
-        record["hunchback_score"],
-        record["body_tilt"],
-        record["round_shoulder"],
+        head_angle,
+        shoulder_diff,
+        hunchback_score,
+        body_tilt,
+        round_shoulder,
     ]])
 
     # 如果有模型用模型预测，否则用规则
@@ -111,18 +118,18 @@ def predict_health_score(record: dict) -> dict:
         dummy_df = pd.DataFrame([record])
         score = round(float(_synthesize_health_score(dummy_df)[0]), 1)
 
-    # 各项扣分明细
+    # 各项扣分明细（用裁剪后的值）
     detail = {}
-    if record["head_angle"] > 30:
-        detail["头部前倾"] = round((record["head_angle"] - 30) * 1.0, 1)
-    if record["shoulder_diff"] > 0.03:
-        detail["高低肩"] = round((record["shoulder_diff"] - 0.03) * 300, 1)
-    if record["hunchback_score"] > 0.25:
-        detail["驼背含胸"] = round((record["hunchback_score"] - 0.25) * 100, 1)
-    if record["body_tilt"] > 3:
-        detail["身体倾斜"] = round((record["body_tilt"] - 3) * 2.0, 1)
-    if record["round_shoulder"] > 0.15:
-        detail["圆肩"] = round((record["round_shoulder"] - 0.15) * 100, 1)
+    if head_angle > 30:
+        detail["头部前倾"] = round((head_angle - 30) * 1.0, 1)
+    if shoulder_diff > 0.03:
+        detail["高低肩"] = round((shoulder_diff - 0.03) * 300, 1)
+    if hunchback_score > 0.25:
+        detail["驼背含胸"] = round((hunchback_score - 0.25) * 100, 1)
+    if body_tilt > 3:
+        detail["身体倾斜"] = round((body_tilt - 3) * 2.0, 1)
+    if round_shoulder > 0.15:
+        detail["圆肩"] = round((round_shoulder - 0.15) * 100, 1)
 
     # 评级
     if score >= 90:

@@ -1,4 +1,5 @@
 <script setup>
+import PageTitle from "../components/PageTitle.vue"
 import { ref, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '../store/user'
@@ -32,10 +33,13 @@ const forecastX = computed(() =>
   forecast.value?.predictions?.map((_, i) => `+${i + 1}`) || []
 )
 
-const forecastHeadAngle = computed(() => [{
-  name: '头部前倾预测',
-  data: forecast.value?.predictions?.map((p) => p.head_angle) || [],
-}])
+const forecastSeries = computed(() => [
+  { name: '头部前倾°', data: forecast.value?.predictions?.map((p) => p.head_angle) || [], color: '#409EFF' },
+  { name: '身体倾斜°', data: forecast.value?.predictions?.map((p) => p.body_tilt) || [], color: '#f56c6c' },
+  { name: '驼背%',     data: forecast.value?.predictions?.map((p) => (p.hunchback_score || 0) * 100) || [], color: '#e6a23c' },
+  { name: '高低肩%',   data: forecast.value?.predictions?.map((p) => (p.shoulder_diff || 0) * 100) || [], color: '#909399' },
+  { name: '圆肩%',     data: forecast.value?.predictions?.map((p) => (p.round_shoulder || 0) * 100) || [], color: '#67c23a' },
+])
 
 const scoreColor = computed(() => {
   const s = healthScore.value?.score || 100
@@ -61,7 +65,7 @@ onMounted(loadReport)
   <div class="report-page" id="report-content">
     <!-- 操作栏（打印时隐藏） -->
     <div class="page-header no-print">
-      <h3>健康报告</h3>
+      <PageTitle>健康报告</PageTitle>
       <div class="header-actions">
         <el-button :loading="loading" @click="loadReport">刷新数据</el-button>
         <el-button type="primary" @click="exportPDF" :disabled="!healthScore">
@@ -156,11 +160,11 @@ onMounted(loadReport)
         <template #header>未来趋势预测（LSTM 模型）</template>
         <div class="no-print">
           <LineChart
-            title="头部前倾角度预测"
+            title="五项指标趋势预测"
             :x-data="forecastX"
-            :series="forecastHeadAngle"
-            y-name="度"
-            height="300px"
+            :series="forecastSeries"
+            y-name="度 / %"
+            height="320px"
           />
         </div>
         <div class="print-only">
@@ -205,7 +209,7 @@ onMounted(loadReport)
 </template>
 
 <style scoped>
-.report-page { padding: 20px; min-height: 100vh; background: #f0f2f5; }
+.report-page { padding: clamp(14px, 2.5vw, 28px); min-height: 100vh; max-width: 100%; width: 100vw; background: #f0f2f5; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
 .page-header h3 { margin: 0; }
 .header-actions { display: flex; gap: 8px; }

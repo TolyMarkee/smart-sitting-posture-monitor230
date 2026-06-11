@@ -8,6 +8,8 @@ import request from '../api/request'
 import RealTimeIndicator from '../components/RealTimeIndicator.vue'
 import VideoStreamPanel from '../components/VideoStreamPanel.vue'
 import SkeletonCanvas from '../components/SkeletonCanvas.vue'
+// AiPet now in App.vue (global)
+import PetHouse from '../components/PetHouse.vue'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useVideoStream } from '../composables/useVideoStream'
 
@@ -238,17 +240,126 @@ async function requestNotification() {
 function handleLogout() { userStore.logout(); router.push('/login') }
 function openAssistant() { router.push('/assistant') }
 
-// 悬浮AI宠物（可拖拽）
-const petRef = ref(null); const petHidden = ref(false); const petMsg = ref('')
-const petPos = ref({ x: window.innerWidth - 80, y: window.innerHeight - 180 })
-const petStyle = computed(() => ({ left: petPos.value.x + 'px', top: petPos.value.y + 'px' }))
-let dragging = false, dragStart = { x: 0, y: 0 }
-function startDrag(e) { if (e.target.closest('.pet-bubble')) return; dragging = true; dragStart = { x: e.clientX - petPos.value.x, y: e.clientY - petPos.value.y }; document.addEventListener('mousemove', onDrag); document.addEventListener('mouseup', stopDrag) }
-function onDrag(e) { if (!dragging) return; petPos.value = { x: e.clientX - dragStart.x, y: e.clientY - dragStart.y } }
-function stopDrag() { dragging = false; document.removeEventListener('mousemove', onDrag); document.removeEventListener('mouseup', stopDrag) }
-const petTips = ['记得挺直腰背哦~','该起来走走了！','喝点水吧','转转脖子放松','你的坐姿真棒！','看看健康报告吧']
-let petTimer = null
-function showPetTip() { petMsg.value = petTips[Math.floor(Math.random() * petTips.length)]; setTimeout(() => { petMsg.value = '' }, 4000) }
+// ── AI助手悬浮对话框 ──
+const aiOpen = ref(false); const aiMinimized = ref(false)
+const aiPos = ref({ x: Math.max(100, window.innerWidth - 400), y: Math.max(60, window.innerHeight - 540) })
+const fabPos = ref({ x: window.innerWidth - 76, y: window.innerHeight - 76 })
+let aiDragging = false, aiDragStart = { x:0, y:0 }
+let fabDragging = false, fabDragStart = { x:0, y:0 }, fabClickMoved = false
+
+// 对话框拖动
+function aiStartDrag(e) {
+  if (e.target.closest('.ai-dialog-actions') || e.target.closest('button') || e.target.closest('a')) return
+  aiDragging = true; aiDragStart = { x: e.clientX - aiPos.value.x, y: e.clientY - aiPos.value.y }
+  document.addEventListener('mousemove', aiOnDrag); document.addEventListener('mouseup', aiStopDrag)
+}
+function aiOnDrag(e) {
+  if (!aiDragging) return
+  aiPos.value = { x: e.clientX - aiDragStart.x, y: e.clientY - aiDragStart.y }
+}
+function aiStopDrag() { aiDragging = false; document.removeEventListener('mousemove', aiOnDrag); document.removeEventListener('mouseup', aiStopDrag) }
+
+// FAB拖动 + 空闲边缘吸附
+let fabSnapTimer = null
+const fabEl = () => document.querySelector('.ai-fab')
+function fabStartDrag(e) {
+  e.preventDefault()
+  clearTimeout(fabSnapTimer); clearTimeout(fabHoldTimer)
+  // 拖动时去掉transition，跟手
+  const el = fabEl(); if (el) el.style.transition = 'none'
+  fabDragging = true; fabClickMoved = false
+  fabDragStart = { x: e.clientX - fabPos.value.x, y: e.clientY - fabPos.value.y }
+  document.addEventListener('mousemove', fabOnDrag); document.addEventListener('mouseup', fabStopDrag)
+  // 按住600ms不动→显示剩余次数
+  fabHoldTimer = setTimeout(() => { if (!fabClickMoved) checkQuota() }, 600)
+}
+function fabOnDrag(e) {
+  if (!fabDragging) return
+  if (Math.abs(e.clientX - fabDragStart.x - fabPos.value.x) > 1 || Math.abs(e.clientY - fabDragStart.y - fabPos.value.y) > 1) {
+    fabClickMoved = true; clearTimeout(fabHoldTimer)
+  }
+  fabPos.value = { x: e.clientX - fabDragStart.x, y: e.clientY - fabDragStart.y }
+}
+function snapToEdge() {
+  const ww = window.innerWidth, wh = window.innerHeight
+  const x = fabPos.value.x, y = fabPos.value.y
+  // 确定最近边
+  const distLeft = x + 26, distRight = ww - (x + 26), distBottom = wh - (y + 26)
+  if (distLeft < distRight && distLeft < distBottom && distLeft < 150) {
+    fabPos.value.x = -32
+  } else if (distRight < distLeft && distRight < distBottom && distRight < 150) {
+    fabPos.value.x = ww - 20
+  } else if (distBottom < 200) {
+    fabPos.value.y = wh - 20
+  }
+}
+function fabStopDrag() {
+  fabDragging = false; clearTimeout(fabHoldTimer)
+  document.removeEventListener('mousemove', fabOnDrag); document.removeEventListener('mouseup', fabStopDrag)
+  // 恢复transition用于吸附动画
+  const el = fabEl(); if (el) el.style.transition = ''
+  if (fabClickMoved) fabSnapTimer = setTimeout(snapToEdge, 3000)
+}
+// 宠物皮肤
+const PETS = { cat:'🐱', dog:'🐶', hamster:'🐹', fox:'🦊', neko:'🎀' }
+const currentPet = ref(localStorage.getItem('ai_pet') || 'cat')
+const petEmoji = computed(() => PETS[currentPet.value] || '🐱')
+
+// 右键迷你窗 · 长按显示剩余次数
+const miniChatOpen = ref(false)
+const miniChatInput = ref('')
+const miniChatMessages = ref([])
+const miniChatLoading = ref(false)
+const fabQuotaLeft = ref(30)
+let fabLongPressTimer = null
+
+// 长按查剩余次数
+let fabHoldTimer = null
+const fabQuotaHint = ref('')
+
+function fabClick() {
+  if (!fabClickMoved) aiOpen = true
+}
+function fabRightClick(e) {
+  e.preventDefault()
+  miniChatOpen.value = !miniChatOpen.value
+  aiOpen.value = false
+  if (miniChatOpen.value) checkQuota()
+}
+async function checkQuota() {
+  try {
+    const { useUserStore } = await import('../store/user')
+    const uid = useUserStore().userInfo?.user_id || 191
+    const { data } = await (await import('../api/request')).default.get('/api/v1/chat/quota', { params: { user_id: uid } })
+    fabQuotaLeft.value = Math.max(0, 30 - (data?.used || 0))
+    fabQuotaHint.value = '💬 还可以问 ' + fabQuotaLeft.value + ' 次'
+    setTimeout(() => { fabQuotaHint.value = '' }, 2500)
+  } catch { fabQuotaLeft.value = 30 }
+}
+
+async function miniChatSend(q) {
+  const msg = (q || miniChatInput.value).trim()
+  if (!msg || miniChatLoading.value) return
+  miniChatMessages.value.push({ role: 'user', content: msg })
+  miniChatInput.value = ''
+  miniChatLoading.value = true
+  try {
+    const uid = userStore.userInfo?.user_id || 1
+    const { data } = await import('../api/chat').then(m => m.chatApi.sendMessage(msg, [], uid))
+    miniChatMessages.value.push({ role: 'assistant', content: data.reply })
+  } catch {
+    miniChatMessages.value.push({ role: 'assistant', content: 'AI服务暂不可用', error: true })
+  }
+  miniChatLoading.value = false
+}
+function fabHover() {
+  clearTimeout(fabSnapTimer)
+  if (fabPos.value.x < -10) fabPos.value.x = 12
+  else if (fabPos.value.x > window.innerWidth - 42) fabPos.value.x = window.innerWidth - 64
+  if (fabPos.value.y > window.innerHeight - 42) fabPos.value.y = window.innerHeight - 64
+}
+function fabLeave() { fabSnapTimer = setTimeout(snapToEdge, 3000) }
+function fabResize() { fabPos.value.x = Math.min(fabPos.value.x, window.innerWidth - 20); fabPos.value.y = Math.min(fabPos.value.y, window.innerHeight - 20) }
 
 // ── 生成模拟数据 ──
 const genLoading = ref(false)
@@ -351,13 +462,13 @@ onMounted(() => {
   startSnapshotPolling() // K230截图轮询
   timer = setInterval(refresh, 3000)
   clockTimer = setInterval(updateClock, 1000)
-  petTimer = setInterval(showPetTip, 30000)
+  window.addEventListener('resize', fabResize)
 })
 onUnmounted(() => {
   clearInterval(timer)
   clearInterval(clockTimer)
-  clearInterval(petTimer)
   stopSnapshotPolling()
+  window.removeEventListener('resize', fabResize)
 })
 </script>
 
@@ -380,6 +491,8 @@ onUnmounted(() => {
         <router-link to="/health-report" :class="{ active: currentPath === '/health-report' }">健康报告</router-link>
         <router-link to="/assistant" :class="{ active: currentPath === '/assistant' }">智能客服</router-link>
         <router-link to="/activities" :class="{ active: currentPath === '/activities' }">活动</router-link>
+        <router-link to="/shop" :class="{ active: currentPath === '/shop' }">商城</router-link>
+        <router-link to="/settings" :class="{ active: currentPath === '/settings' }">⚙</router-link>
       </div>
       <div class="top-right">
         <span class="top-time">{{ nowStr }}</span>
@@ -451,10 +564,34 @@ onUnmounted(() => {
           />
         </div>
 
-        <!-- 中：日历 -->
+        <!-- 中：天气+日历 -->
         <div class="content-center">
+          <!-- 天气横条 -->
+          <div v-if="weather" class="weather-bar">
+            <span class="weather-bar-icon">{{ weather.weather === '晴' ? '☀️' : weather.weather.includes('云') ? '⛅' : weather.weather.includes('雨') ? '🌧️' : '🌤️' }}</span>
+            <span class="weather-bar-city">{{ weather.city || '福州' }}</span>
+            <span class="weather-bar-temp">{{ weather.temperature }}°</span>
+            <span class="weather-bar-desc">{{ weather.weather }}</span>
+            <span class="weather-bar-extra">💧{{ weather.humidity || '--' }}% 💨{{ weather.winddirection || '--' }}</span>
+            <span class="weather-bar-change" @click="showCityPicker = !showCityPicker">切换 ▾</span>
+          </div>
+          <div v-else class="weather-bar weather-bar-placeholder">
+            <span>🌤️</span>
+            <span>{{ cityName || '选择城市' }}</span>
+            <span @click="showCityPicker = !showCityPicker" style="cursor:pointer;color:#409EFF">切换 ▾</span>
+            <span @click="loadWeather()" style="cursor:pointer;margin-left:8px">刷新</span>
+          </div>
+          <!-- 城市选择 -->
+          <div v-if="showCityPicker" class="city-picker-inline">
+            <el-input v-model="cityName" size="small" placeholder="搜索城市..." @input="onCityInput" @keyup.enter="switchCity" style="flex:1" />
+            <el-button size="small" type="primary" @click="switchCity">切换</el-button>
+            <div v-if="citySuggestions.length > 0" class="city-dropdown-inline">
+              <div v-for="c in citySuggestions" :key="c.adcode" class="city-dropdown-item" @click="selectCity(c)">{{ c.name }}</div>
+            </div>
+          </div>
+          <!-- 日历 -->
           <div class="panel-card">
-            <div class="panel-title" style="cursor:pointer" @click="router.push('/posture-calendar')">近14天坐姿日历 <span style="font-size:11px;color:#909399">详情 ›</span></div>
+            <div class="panel-title">近14天坐姿日历 <span class="detail-btn" @click.stop="router.push('/posture-calendar')" title="查看详情">📅 ›</span></div>
             <div v-if="dailyStats.length === 0" class="empty-hint">
               暂无数据，请先<el-button type="primary" size="small" text :loading="genLoading" @click="generateDemoData">生成模拟数据</el-button>
             </div>
@@ -473,8 +610,8 @@ onUnmounted(() => {
               <span><span class="ld day-warn"></span>需改善</span>
             </div>
           </div>
-          <div class="panel-card streak-panel" style="cursor:pointer" @click="router.push('/calendar')">
-            <div class="panel-title">连续打卡 <span style="font-size:11px;color:#909399">点击查看 ›</span></div>
+          <div class="panel-card streak-panel">
+            <div class="panel-title">连续打卡 <span class="detail-btn" @click.stop="router.push('/calendar')" title="打卡详情">📋 ›</span></div>
             <div class="streak-big">{{ streakDays }}<span>天</span></div>
             <div class="streak-dots">
               <span v-for="i in 7" :key="i" :class="{ filled: i <= Math.min(streakDays, 7) }"></span>
@@ -493,6 +630,11 @@ onUnmounted(() => {
                 <span class="recent-val">{{ maxMetric(r) }}</span>
               </div>
             </div>
+            <!-- 当前坐姿状态条（嵌入最近记录下方） -->
+            <div v-if="chineseStatus !== '良好'" class="posture-status-inline">
+              <span class="status-inline-icon">{{ parsedIssues.length >= 3 ? '🛑' : parsedIssues.length >= 2 ? '⚠️' : '🔔' }}</span>
+              <span class="status-inline-text">{{ chineseStatus }}</span>
+            </div>
           </div>
         </div>
 
@@ -508,71 +650,6 @@ onUnmounted(() => {
             :round-shoulder="postureStore.latest?.round_shoulder ?? 0"
             :confidence="postureStore.latest?.confidence ?? 0"
           />
-          <!-- 天气大卡片 -->
-          <div class="weather-big-card" v-if="weather">
-            <div class="weather-main">
-              <div class="weather-left">
-                <div class="weather-icon-big">{{ weather.weather === '晴' ? '☀️' : weather.weather.includes('云') ? '⛅' : weather.weather.includes('雨') ? '🌧️' : '🌤️' }}</div>
-                <div class="weather-info">
-                  <div class="weather-city-row">
-                    <span class="weather-city">{{ weather.city || '未知' }}</span>
-                    <span class="weather-change" @click="showCityPicker = !showCityPicker">切换 ▾</span>
-                  </div>
-                  <div class="weather-time">{{ nowStr }}</div>
-                </div>
-              </div>
-              <div class="weather-right">
-                <div class="weather-temp-big">{{ weather.temperature }}<span>°</span></div>
-                <div class="weather-desc">{{ weather.weather }}</div>
-              </div>
-            </div>
-            <div v-if="showCityPicker" class="city-picker-row" style="position:relative">
-              <div style="flex:1;position:relative">
-                <el-input v-model="cityName" size="small" placeholder="搜索城市名..." @input="onCityInput" @keyup.enter="switchCity" class="city-input" />
-                <div v-if="citySuggestions.length > 0" class="city-dropdown">
-                  <div v-for="c in citySuggestions" :key="c.adcode" class="city-dropdown-item" @click="selectCity(c)">
-                    {{ c.name }}
-                  </div>
-                </div>
-              </div>
-              <el-button size="small" type="primary" @click="switchCity">切换</el-button>
-            </div>
-            <div class="weather-extra">
-              <span>💧 {{ weather.humidity || '--' }}%</span>
-              <span>💨 {{ weather.winddirection || '--' }}</span>
-              <span>🕐 {{ weather.reporttime?.slice(11,16) || '' }}</span>
-            </div>
-          </div>
-          <!-- 天气加载中/加载失败占位 -->
-          <div class="weather-big-card weather-placeholder-card" v-else>
-            <div class="weather-main">
-              <div class="weather-left">
-                <div class="weather-icon-big">🌤️</div>
-                <div class="weather-info">
-                  <span class="weather-city">{{ cityName || '选择城市' }}</span>
-                  <span class="weather-change" @click="showCityPicker = !showCityPicker">切换 ▾</span>
-                  <div class="weather-time">{{ nowStr }}</div>
-                </div>
-              </div>
-              <div class="weather-right">
-                <div class="weather-temp-big">--<span>°</span></div>
-              </div>
-            </div>
-            <div v-if="showCityPicker" class="city-picker-row" style="position:relative">
-              <div style="flex:1;position:relative">
-                <el-input v-model="cityName" size="small" placeholder="搜索城市名..." @input="onCityInput" @keyup.enter="switchCity" class="city-input" />
-                <div v-if="citySuggestions.length > 0" class="city-dropdown">
-                  <div v-for="c in citySuggestions" :key="c.adcode" class="city-dropdown-item" @click="selectCity(c)">
-                    {{ c.name }}
-                  </div>
-                </div>
-              </div>
-              <el-button size="small" type="primary" @click="switchCity">切换</el-button>
-            </div>
-            <div class="weather-extra">
-              <span @click="loadWeather()" style="cursor:pointer">点击重试</span>
-            </div>
-          </div>
 
           <div class="panel-card quick-links">
             <div class="panel-title">快捷操作</div>
@@ -583,6 +660,8 @@ onUnmounted(() => {
               <div class="link-item" @click="router.push('/history')"><span class="link-icon">📈</span><span>历史趋势</span></div>
             </div>
           </div>
+          <!-- 助手之家 -->
+          <PetHouse />
         </div>
       </div>
     </div>
@@ -608,37 +687,83 @@ onUnmounted(() => {
       </div>
     </el-dialog>
 
-    <!-- 右下角坐姿状态悬浮卡片 -->
-    <transition name="status-fade">
-      <div v-if="chineseStatus !== '良好'" class="posture-status-float">
-        <div class="status-float-icon">{{ parsedIssues.length >= 3 ? '🛑' : parsedIssues.length >= 2 ? '⚠️' : '🔔' }}</div>
-        <div class="status-float-text">
-          <div class="status-float-title">当前坐姿</div>
-          <div class="status-float-detail">{{ chineseStatus }}</div>
+    <!-- AI宠物（左键拖动 · 右键迷你窗 · 3D待机动画） -->
+    <AiPet v-if="!aiOpen && !miniChatOpen"
+      :pet-type="currentPet" :quota-left="fabQuotaLeft" :quota-hint="fabQuotaHint"
+      @rightClick="fabRightClick" @click="fabClick" @longPress="checkQuota"
+    />
+    <!-- 悬浮聊天框（右键宠物打开 · 可拖动） -->
+    <transition name="ai-slide">
+      <div v-if="miniChatOpen" class="float-chat" :style="{ left: Math.max(4, fabPos.x - 340) + 'px', top: Math.max(40, fabPos.y - 400) + 'px' }" @mousedown="aiStartDrag">
+        <div class="float-chat-header">
+          <span>{{ petEmoji }} 智能问答</span>
+          <span class="mini-quota">剩 {{ fabQuotaLeft }} 次</span>
+          <span @click.stop="router.push('/assistant'); miniChatOpen=false" class="float-chat-btn" title="全屏">⛶</span>
+          <span @click.stop="miniChatOpen=false" class="float-chat-btn float-chat-close" title="关闭">✕</span>
+        </div>
+        <div class="float-chat-body">
+          <div v-if="miniChatMessages.length===0" class="float-chat-empty">
+            <span style="font-size:32px">{{ petEmoji }}</span>
+            <p>有什么可以帮你的？</p>
+            <div class="float-quick-asks">
+              <span @click="miniChatSend">我的坐姿怎么样</span>
+              <span @click="miniChatSend">怎么改善驼背</span>
+            </div>
+          </div>
+          <div v-for="(m,i) in miniChatMessages" :key="i">
+            <div v-if="m.role==='user'" class="float-msg float-msg-user">{{ m.content }}</div>
+            <div v-else class="float-msg float-msg-ai">{{ m.content }}</div>
+          </div>
+          <div v-if="miniChatLoading" class="float-msg float-msg-ai" style="opacity:0.6">思考中...</div>
+        </div>
+        <div class="float-chat-input">
+          <input v-model="miniChatInput" @keyup.enter="miniChatSend" placeholder="输入问题..." :disabled="miniChatLoading" />
+          <button @click="miniChatSend" :disabled="miniChatLoading || !miniChatInput.trim()">▶</button>
         </div>
       </div>
     </transition>
-
-    <!-- 悬浮AI助手 -->
-    <div class="ai-pet" :style="petStyle" @mousedown="startDrag" ref="petRef" v-show="!petHidden">
-      <div class="pet-bubble" v-if="petMsg" @click="petMsg=''">{{ petMsg }}</div>
-      <div class="pet-body" @click="openAssistant" title="AI坐姿助手">
-        <span class="pet-face">🤖</span>
+    <!-- AI对话框（全区域可拖动） -->
+    <transition name="ai-slide">
+      <div v-if="aiOpen" class="ai-dialog" :class="{ minimized: aiMinimized }"
+           :style="{ left: aiPos.x + 'px', top: aiPos.y + 'px' }" @mousedown="aiStartDrag">
+        <div class="ai-dialog-header">
+          <span>🤖 AI坐姿助手</span>
+          <div class="ai-dialog-actions">
+            <span @click.stop="aiMinimized = !aiMinimized" :title="aiMinimized ? '展开' : '收起'">
+              {{ aiMinimized ? '□' : '─' }}
+            </span>
+            <span @click.stop="aiPos = { x: Math.max(100, window.innerWidth - 400), y: Math.max(60, window.innerHeight - 540) }" title="复位">↺</span>
+            <span @click.stop="aiOpen = false" title="关闭">✕</span>
+          </div>
+        </div>
+        <div v-show="!aiMinimized" class="ai-dialog-body">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:10px 0">
+            <el-button type="primary" @click.stop="openAssistant" style="width:100%">
+              💬 打开完整对话
+            </el-button>
+            <el-button @click.stop="router.push('/assistant');aiOpen=false" style="width:100%">
+              📋 查看对话记录
+            </el-button>
+            <span style="font-size:11px;color:#909399">
+              拖动对话框任意位置可移动 · 点击 ─ 收起
+            </span>
+          </div>
+        </div>
       </div>
-    </div>
+    </transition>
 
 </div>
 </template>
 
 <style scoped>
-.dashboard { min-height: 100vh; background: #f0f2f5; }
+.dashboard { min-height: 100vh; width: 100%; background: #f0f2f5; }
 
 /* ── 顶部 ── */
 .dash-top {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 24px; height: 52px;
   background: linear-gradient(135deg, #1a1a2e, #16213e);
-  color: #fff;
+  color: #fff; width: 100%;
 }
 .top-brand { display: flex; align-items: center; gap: 10px; }
 .brand-logo { width: 34px; height: 34px; border-radius: 8px; background: rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; }
@@ -684,8 +809,8 @@ onUnmounted(() => {
 .stat-mini-val { font-size: 26px; font-weight: 700; color: #303133; }
 .stat-mini-lbl { font-size: 11px; color: #909399; margin-top: 2px; }
 
-/* 三栏网格 */
-.content-grid { display: grid; grid-template-columns: 340px 1fr 320px; gap: 16px; }
+/* 三栏网格 — 自适应缩放 */
+.content-grid { display: grid; grid-template-columns: minmax(300px, 380px) 1fr minmax(260px, 380px); gap: 1rem; }
 
 /* 卡片 */
 .panel-card {
@@ -719,6 +844,27 @@ onUnmounted(() => {
 .streak-dots { display: flex; justify-content: center; gap: 8px; margin-top: 8px; }
 .streak-dots span { width: 24px; height: 24px; border-radius: 50%; background: #ebeef5; transition: all 0.3s; }
 .streak-dots span.filled { background: #67c23a; box-shadow: 0 2px 8px rgba(103,194,58,0.4); }
+
+/* 天气横条（中栏顶部） */
+.weather-bar {
+  background: linear-gradient(135deg, #3b82f6, #60a5fa);
+  border-radius: 10px; padding: 10px 16px; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 12px;
+  color: #fff; font-size: 14px; position: relative; overflow: hidden;
+}
+.weather-bar::after { content:''; position:absolute; top:-20px; right:-20px; width:80px; height:80px; border-radius:50%; background:rgba(255,255,255,0.1); }
+.weather-bar-icon { font-size: 24px; position: relative; z-index: 1; }
+.weather-bar-city { font-weight: 600; position: relative; z-index: 1; }
+.weather-bar-temp { font-size: 22px; font-weight: 300; position: relative; z-index: 1; }
+.weather-bar-desc { opacity: 0.85; position: relative; z-index: 1; }
+.weather-bar-extra { font-size: 12px; opacity: 0.7; margin-left: auto; position: relative; z-index: 1; }
+.weather-bar-change { font-size: 11px; opacity: 0.7; cursor: pointer; position: relative; z-index: 1; }
+.weather-bar-change:hover { opacity: 1; }
+.weather-bar-placeholder { background: linear-gradient(135deg, #94a3b8, #cbd5e1); }
+.city-picker-inline { display: flex; gap: 8px; margin-bottom: 12px; padding: 8px; background: #fff; border-radius: 8px; position: relative; }
+.city-dropdown-inline { position: absolute; top: 100%; left: 0; right: 0; background: #fff; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.15); max-height: 160px; overflow-y: auto; z-index: 100; }
+.city-dropdown-item { padding: 8px 12px; cursor: pointer; font-size: 13px; color: #303133; }
+.city-dropdown-item:hover { background: #f0f2f5; }
 
 /* 天气大卡片 */
 .weather-big-card {
@@ -766,9 +912,14 @@ onUnmounted(() => {
 .empty-hint { text-align: center; color: #c0c4cc; font-size: 13px; padding: 20px; }
 
 /* 响应式 */
-@media (max-width: 1200px) {
+@media (max-width: 1000px) {
   .content-grid { grid-template-columns: 1fr; }
   .top-nav { display: none; }
+}
+@media (max-width: 600px) {
+  .top-right { gap: 8px; }
+  .quick-actions { flex-wrap: wrap; gap: 8px; }
+  .calendar-grid { gap: 3px; }
 }
 .detail-stat { text-align:center; padding:12px; background:#f7f8fa; border-radius:8px; font-size:13px; color:#606266; }
 .detail-stat b { font-size:22px; display:block; margin-bottom:2px; }
@@ -776,34 +927,93 @@ onUnmounted(() => {
 .video-placeholder span { font-size: 11px; color: #c0c4cc; }
 .video-status.offline { color: #f56c6c; font-size: 11px; }
 
-/* 悬浮AI宠物 */
-.ai-pet { position: fixed; z-index: 999; cursor: grab; user-select: none; }
-.ai-pet:active { cursor: grabbing; }
-.pet-body { width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #667eea, #764ba2); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 16px rgba(102,126,234,0.4); transition: transform 0.2s; animation: petBounce 2s ease-in-out infinite; }
-.pet-body:hover { transform: scale(1.1); }
-.pet-face { font-size: 28px; }
-.pet-bubble { position: absolute; bottom: 64px; right: -10px; background: #fff; padding: 8px 14px; border-radius: 14px; font-size: 13px; color: #303133; box-shadow: 0 2px 12px rgba(0,0,0,0.1); white-space: nowrap; cursor: pointer; animation: fadeInUp 0.3s ease; }
-.pet-bubble::after { content: ''; position: absolute; bottom: -6px; right: 20px; width: 12px; height: 12px; background: #fff; transform: rotate(45deg); }
-@keyframes petBounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
-@keyframes fadeInUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
-/* 右下角坐姿状态悬浮卡片 */
-.posture-status-float {
-  position: fixed; bottom: 24px; right: 24px;
-  background: linear-gradient(135deg, rgba(245,108,108,0.95), rgba(245,108,108,0.85));
-  backdrop-filter: blur(12px);
-  border-radius: 16px; padding: 16px 20px;
-  display: flex; align-items: center; gap: 14px;
-  color: #fff; z-index: 998;
-  box-shadow: 0 8px 32px rgba(245,108,108,0.4);
+/* 悬浮AI入口按钮 */
+.ai-fab { position:fixed; width:56px; height:56px; border-radius:50%;
+  background:linear-gradient(135deg,#ffe0e8,#ffd4e0); display:flex; align-items:center; justify-content:center;
+  font-size:28px; cursor:grab; z-index:999; box-shadow:0 4px 16px rgba(255,150,180,0.4);
+  transition:transform 0.15s, box-shadow 0.15s;
+  user-select:none; }
+.fab-pet { animation:petIdle 2.5s ease-in-out infinite; }
+@keyframes petIdle { 0%,100%{transform:translateY(0) rotate(0deg)} 15%{transform:translateY(-3px) rotate(-3deg)} 30%{transform:translateY(0) rotate(0deg)} 45%{transform:translateY(-2px) rotate(3deg)} 60%{transform:translateY(0) rotate(0deg)} 75%{transform:scale(1.08)} 85%{transform:scale(1)} }
+.ai-fab::before { content:''; position:absolute; inset:-6px; border-radius:50%; background:transparent;
+  transition:all 0.3s; z-index:-1; }
+.ai-fab.dragging::before { background:rgba(102,126,234,0.12); animation:trailPulse 0.5s ease-out infinite; }
+.ai-fab.dragging { box-shadow: 0 0 0 8px rgba(102,126,234,0.15), 0 0 0 20px rgba(102,126,234,0.06) !important; }
+@keyframes trailPulse { 0%{inset:-8px;opacity:0.8} 50%{inset:-18px;opacity:0.3} 100%{inset:-8px;opacity:0.8} }
+.ai-fab:active { cursor:grabbing; transform:scale(1.05); box-shadow:0 8px 28px rgba(102,126,234,0.55); }
+.ai-fab:hover { transform:scale(1.08); box-shadow:0 6px 22px rgba(102,126,234,0.5); }
+.fab-badge { position:absolute; top:-4px; right:-4px; width:20px; height:20px; border-radius:50%;
+  background:#f56c6c; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center;
+  animation:badgePulse 1.5s ease-in-out infinite; z-index:2; }
+@keyframes badgePulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.15)} }
+/* 云朵气泡 */
+.fab-cloud { position:absolute; top:-52px; left:50%; transform:translateX(-50%);
+  background:#fff; border-radius:16px; padding:6px 14px;
+  box-shadow:0 3px 12px rgba(102,126,234,0.2);
+  animation:cloudFloat 2s ease-in-out infinite; z-index:3; white-space:nowrap; }
+.fab-cloud::after { content:''; position:absolute; bottom:-6px; left:50%; transform:translateX(-50%);
+  width:0; height:0; border-left:7px solid transparent; border-right:7px solid transparent;
+  border-top:8px solid #fff; }
+.fab-cloud-text { font-size:12px; font-weight:700; color:#667eea; }
+@keyframes cloudFloat { 0%,100%{transform:translateX(-50%) translateY(0)} 50%{transform:translateX(-50%) translateY(-4px)} }
+/* AI对话框 */
+.ai-dialog { position:fixed; z-index:1000; width:clamp(300px, 360px, 90vw); background:#fff; border-radius:14px;
+  box-shadow:0 8px 40px rgba(0,0,0,0.2); overflow:hidden; cursor:move; user-select:none; }
+.ai-dialog.minimized { height:auto; }
+.ai-dialog-header { display:flex; justify-content:space-between; align-items:center;
+  padding:12px 16px; background:linear-gradient(135deg,#667eea,#764ba2); color:#fff;
+  font-weight:600; }
+.ai-dialog-header span { cursor:default; }
+.ai-dialog-actions span { margin-left:12px; cursor:pointer; opacity:0.8; font-size:16px; }
+.ai-dialog-actions span:hover { opacity:1; }
+.ai-dialog-body { padding:16px; max-height:420px; overflow-y:auto; }
+.ai-slide-enter-active { animation: aiIn 0.3s ease; }
+.ai-slide-leave-active { animation: aiIn 0.2s ease reverse; }
+@keyframes aiIn { from{opacity:0;transform:scale(0.9)} to{opacity:1;transform:scale(1)} }
+/* 悬浮聊天框 */
+.float-chat { position:fixed; z-index:1001; width:360px; height:440px; background:#fff; border-radius:16px;
+  box-shadow:0 12px 48px rgba(0,0,0,0.2); display:flex; flex-direction:column; overflow:hidden; }
+.float-chat-header { display:flex; align-items:center; gap:8px;
+  padding:10px 14px; background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; font-weight:600; font-size:13px; cursor:move; }
+.float-chat-header span:first-child { flex:0; }
+.float-chat-btn { cursor:pointer; opacity:0.8; font-size:14px; padding:2px 4px; }
+.float-chat-btn:hover { opacity:1; }
+.float-chat-close:hover { color:#ff6b6b; }
+.float-chat-body { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
+.float-chat-empty { text-align:center; padding:20px; color:#909399; }
+.float-chat-empty p { margin:8px 0 14px; }
+.float-quick-asks { display:flex; flex-wrap:wrap; gap:6px; justify-content:center; }
+.float-quick-asks span { background:#f0f2f5; padding:6px 12px; border-radius:14px; font-size:11px; cursor:pointer; color:#606266; transition:all 0.15s; }
+.float-quick-asks span:hover { background:#e0e4e8; color:#303133; }
+.float-msg { max-width:85%; padding:8px 12px; border-radius:14px; font-size:13px; line-height:1.5; word-break:break-word; animation:msgIn 0.2s ease; }
+.float-msg-user { background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; align-self:flex-end; border-bottom-right-radius:4px; }
+.float-msg-ai { background:#f0f2f5; color:#303133; align-self:flex-start; border-bottom-left-radius:4px; }
+@keyframes msgIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+.float-chat-input { display:flex; padding:10px 12px; gap:8px; border-top:1px solid #eee; }
+.float-chat-input input { flex:1; border:1px solid #e0e0e0; border-radius:20px; padding:8px 14px; font-size:13px; outline:none; transition:border 0.2s; }
+.float-chat-input input:focus { border-color:#667eea; }
+.float-chat-input button { width:32px; height:32px; border-radius:50%; border:none; background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; font-size:12px; cursor:pointer; transition:transform 0.15s; flex-shrink:0; }
+.float-chat-input button:hover { transform:scale(1.1); }
+.float-chat-input button:disabled { opacity:0.5; transform:none; }
+.mini-quota { font-size:10px; opacity:0.85; background:rgba(255,255,255,0.2); padding:2px 8px; border-radius:10px; flex:1; text-align:center; }
+/* 详情按钮（防误触整卡跳转） */
+.detail-btn { font-size:12px; color:#409EFF; cursor:pointer; padding:2px 8px; border-radius:12px; background:rgba(64,158,255,0.08); transition:all 0.15s; }
+.detail-btn:hover { background:rgba(64,158,255,0.2); color:#337ecc; }
+/* 最近记录内嵌当前坐姿状态条 */
+.posture-status-inline {
+  margin-top: 10px; padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(245,108,108,0.1), rgba(245,108,108,0.05));
+  border: 1px solid rgba(245,108,108,0.3);
+  border-radius: 10px;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 14px; font-weight: 600; color: #f56c6c;
   animation: statusPulse 2s ease-in-out infinite;
-  min-width: 260px;
 }
-.status-float-icon { font-size: 36px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3)); }
-.status-float-title { font-size: 11px; opacity: 0.8; letter-spacing: 1px; }
-.status-float-detail { font-size: 15px; font-weight: 700; line-height: 1.4; }
+.status-inline-icon { font-size: 22px; }
+.status-inline-text { line-height: 1.5; }
 @keyframes statusPulse {
-  0%, 100% { box-shadow: 0 8px 32px rgba(245,108,108,0.4); }
-  50% { box-shadow: 0 8px 48px rgba(245,108,108,0.7); }
+  0%, 100% { border-color: rgba(245,108,108,0.2); }
+  50% { border-color: rgba(245,108,108,0.6); }
 }
 /* 最近记录 */
 .recent-list { max-height: 220px; overflow-y: auto; }
@@ -813,7 +1023,4 @@ onUnmounted(() => {
 .recent-status { font-weight: 600; flex: 1; margin: 0 8px; }
 .recent-val { color: #303133; font-weight: 700; }
 
-.status-fade-enter-active { animation: slideUp 0.4s ease; }
-.status-fade-leave-active { animation: slideUp 0.3s ease reverse; }
-@keyframes slideUp { from { opacity:0; transform:translateY(30px); } to { opacity:1; transform:translateY(0); } }
 </style>

@@ -113,6 +113,7 @@ def get_profile(
         phone=current_user.phone,
         avatar_url=current_user.avatar_url,
         role=current_user.role,
+        points=current_user.points or 0,
         is_active=current_user.is_active,
         created_at=current_user.created_at.isoformat() if current_user.created_at else "",
     )

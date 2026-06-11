@@ -1,4 +1,5 @@
 <script setup>
+import PageTitle from "../components/PageTitle.vue"
 import { ref, onMounted, watch, computed } from 'vue'
 import { usePostureStore } from '../store/posture'
 import { useUserStore } from '../store/user'
@@ -69,7 +70,7 @@ onMounted(loadHistory)
 <template>
   <div class="history-page">
     <div class="page-header">
-      <h3>历史趋势</h3>
+      <PageTitle>历史趋势</PageTitle>
       <div class="header-right">
         <span v-if="loading">加载中...</span>
         <span v-else-if="postureStore.history.length > 0" class="record-hint">
@@ -139,8 +140,8 @@ onMounted(loadHistory)
 
 <style scoped>
 .history-page {
-  padding: 20px;
-  min-height: 100vh;
+  padding: clamp(14px, 2.5vw, 28px);
+  min-height: 100vh; max-width: 100%; width: 100vw;
   background: #f0f2f5;
 }
 

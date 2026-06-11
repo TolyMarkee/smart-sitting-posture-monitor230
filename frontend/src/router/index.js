@@ -71,6 +71,18 @@ const routes = [
     component: () => import('../views/Profile.vue'),
     meta: { title: '个人中心', requiresAuth: true },
   },
+  {
+    path: '/settings',
+    name: 'Settings',
+    component: () => import('../views/Settings.vue'),
+    meta: { title: '设备配置', requiresAuth: true },
+  },
+  {
+    path: '/shop',
+    name: 'Shop',
+    component: () => import('../views/Shop.vue'),
+    meta: { title: '积分商城', requiresAuth: true },
+  },
 ]
 
 const router = createRouter({

@@ -34,8 +34,18 @@ class ChatResponse(BaseModel):
 
 @router.post("/message", response_model=ChatResponse)
 async def chat_message(payload: ChatRequest, db: Session = Depends(get_db)):
-    """智能客服对话（自动保存记录）"""
+    """智能客服对话（自动保存记录，普通用户限30次/天）"""
     try:
+        # 0. 检查每日次数限制
+        if payload.user_id:
+            from ..db.models import User
+            user = db.query(User).filter(User.id == payload.user_id).first()
+            if user and user.role not in ("super_admin", "admin"):
+                from datetime import date
+                today_count = crud.count_today_messages(db, payload.user_id)
+                if today_count >= 30:
+                    raise HTTPException(status_code=429, detail="今日对话次数已用完（30次/天），请明天再来")
+
         # 1. 保存用户消息
         if payload.user_id:
             crud.save_chat_message(db, payload.user_id, "user", payload.message)
@@ -55,6 +65,19 @@ async def chat_message(payload: ChatRequest, db: Session = Depends(get_db)):
         return ChatResponse(reply=reply, posture_context=posture_ctx)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"AI 服务异常: {str(e)}")
+
+
+@router.get("/quota")
+def get_chat_quota(user_id: int, db: Session = Depends(get_db)):
+    """查询今日剩余对话次数"""
+    today_used = crud.count_today_messages(db, user_id)
+    # 查询用户额外购买的次数
+    from ..db.models import User
+    user = db.query(User).filter(User.id == user_id).first()
+    extra = user.points if user else 0  # 简化: points中存储了额外次数
+    # 实际额外次数应从独立表读取，此处用环境变量简化
+    daily_limit = 30
+    return {"used": today_used, "limit": daily_limit, "left": max(0, daily_limit - today_used)}
 
 
 @router.get("/history")
